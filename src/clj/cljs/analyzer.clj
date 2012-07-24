@@ -656,18 +656,48 @@
     (load-core)
     (doseq [nsym (concat (vals requires-macros) (vals uses-macros))]
       (clojure.core/require nsym))
-    (swap! namespaces #(-> %
-                           (assoc-in [name :name] name)
-                           (assoc-in [name :excludes] excludes)
-                           (assoc-in [name :uses] uses)
-                           (assoc-in [name :requires] requires)
-                           (assoc-in [name :uses-macros] uses-macros)
-                           (assoc-in [name :requires-macros]
-                                     (into {} (map (fn [[alias nsym]]
-                                                     [alias (find-ns nsym)])
-                                                   requires-macros)))))
-    {:env env :op :ns :form form :name name :uses uses :requires requires
-     :uses-macros uses-macros :requires-macros requires-macros :excludes excludes}))
+    ;; We try to require the namespaces referred to from regular
+    ;; :require and :uses clauses as well, so that we can avoid
+    ;; having the JVM-based Clojure puke unneccesarily; there will be ample
+    ;; opportunities for daddy Clojure to get upset soon by the mischiefs
+    ;; of this youngster, but to kill him on entering the door seems a bit
+    ;; harsh.
+    ;; TODO: we could be intelligent regarding only looking for JVM class files,
+    ;; but for now, we try any file required.
+
+    ;; We gather successful loads, so that we can mark them as 'macroable'
+    ;; for the lookup process to work later in the compiler, since it can now
+    ;; longer rely on the stratified :require-macros for that.
+    (let [
+      uses-macros
+      (or uses-macros (apply merge
+        (for [[key nsym] uses]
+          (try (clojure.core/require nsym) (println "DEBUG: loaded use ns" nsym " into JVM")
+            { key nsym }
+            (catch Throwable ex (println "WARN: failed to load use ns" nsym " into JVM"))))))
+      requires-macros
+      (or requires-macros (apply merge
+      (for [[key nsym] requires]
+      (try (clojure.core/require nsym) (println "DEBUG: loaded require ns" nsym " into JVM")
+          { key nsym }
+        (catch Throwable ex (println "WARN: failed to load require ns" nsym " into JVM"))))))
+        ;; TODO: this actually changes the semantics for uses and requires
+        ;; even when the :require-macros IS used.
+        uses (apply dissoc (cons uses (keys uses-macros)))
+        requires (apply dissoc (cons requires (keys requires-macros)))]
+
+        (swap! namespaces #(-> %
+                               (assoc-in [name :name] name)
+                               (assoc-in [name :excludes] excludes)
+                               (assoc-in [name :uses] uses)
+                               (assoc-in [name :requires] requires)
+                               (assoc-in [name :uses-macros] uses-macros)
+                               (assoc-in [name :requires-macros]
+                                         (into {} (map (fn [[alias nsym]]
+                                                         [alias (find-ns nsym)])
+                                                       requires-macros)))))
+        {:env env :op :ns :form form :name name :uses uses :requires requires
+         :uses-macros uses-macros :requires-macros requires-macros :excludes excludes})))
 
 (defmethod parse 'deftype*
   [_ env [_ tsym fields pmasks :as form] _]
