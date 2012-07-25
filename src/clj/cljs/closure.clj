@@ -331,38 +331,49 @@
 
 (defn compiled-file
   "Given a map with at least a :file key, return a map with
-   {:file .. :provides .. :requires ..}.
+   {:file .. :provides .. :requires ..} or nil, if compilation failed.
 
-   Compiled files are cached so they will only be read once."
+   Compiled files are cached so they will only be read once.
+   We also check for a key :invalid-target indicating that
+   the target platform was not supported, and thus the compiled
+   file never generated!"
   [m]
-  (let [path (.getAbsolutePath (:file m))
-        js (if (:provides m)
-             (map->javascript-file m)
-             (if-let [js (get @compiled-cljs path)]
-               js
-               (read-js (:file m))))]
-    (do (swap! compiled-cljs (fn [old] (assoc old path js)))
-        js)))
+  (when-not (:invalid-target m)
+    (let [path (.getAbsolutePath (:file m))
+          js (if (:provides m)
+               (map->javascript-file m)
+               (if-let [js (get @compiled-cljs path)]
+                 js
+                 (read-js (:file m))))]
+      (do (swap! compiled-cljs (fn [old] (assoc old path js)))
+          js))))
 
 (defn compile-file
   "Compile a single cljs file. If no output-file is specified, returns
   a string of compiled JavaScript. With an output-file option, the
   compiled JavaScript will written to this location and the function
   returns a JavaScriptFile. In either case the return value satisfies
-  IJavaScript."
+  IJavaScript.
+  NOTE: it can also return nil if the compilation was unsuccessful,
+  such as wrong target platform!"
   [^File file {:keys [output-file] :as opts}]
   (if output-file
-    (let [out-file (io/file (output-directory opts) output-file)]
-      (compiled-file (comp/compile-file file out-file)))
+    (let [out-file (io/file (output-directory opts) output-file)
+          compile-info (comp/compile-file file out-file)]
+        ;; NOTE: we have to check whether the compilation was successful
+        ;; before proceeding
+        (when-not (:invalid-target compile-info)
+            (compiled-file compile-info)))
     (compile-form-seq (comp/forms-seq file))))
 
 (defn compile-dir
   "Recursively compile all cljs files under the given source
-  directory. Return a list of JavaScriptFiles."
+  directory. Return a list of JavaScriptFiles.
+  It strips all failed compilations."
   [^File src-dir opts]
   (let [out-dir (output-directory opts)]
-    (map compiled-file
-         (comp/compile-root src-dir out-dir :include-clj true))))
+    (remove nil? (map compiled-file
+         (comp/compile-root src-dir out-dir :include-clj true)))))
 
 (defn path-from-jarfile
   "Given the URL of a file within a jar, return the path of the file

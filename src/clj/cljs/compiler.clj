@@ -33,6 +33,15 @@
     "volatile" "while" "with" "yield" "methods"})
 
 (def ^:dynamic *position* nil)
+(def ^:private ^:const COMPILER-FEATURES-DEFAULTS { :target 'javascript :language 'clojurescript })
+;; You can explicitly set the language feature by a compiler directive
+;;   (comment **compiler** :feature value)
+;; and the compiler itself can change features according to simple heuristics, such as
+;; a via the file ending: .cljs implies { :target javascript :language clojurescript }
+;; and .clj implies { :target jvm :language clojure } so that no JavaScript will be output.
+;; The proper way to interact with these settings is to use
+;;    with-compiler-features, get-compiler-feature and set-compiler-feature
+(def ^:private ^:dynamic *compiler-features* { :target :default :language :default })
 (def cljs-reserved-file-names #{"deps.cljs"})
 
 (defn munge
@@ -743,14 +752,57 @@
          (ana/analyze-file "cljs/core.cljs"))
        ~@body))
 
-(defn is-target-marker
-  "Checks whether the specified form is considered a marker for targeting
-   ClojureScript.
+(defmacro with-compiler-features
+  "Creates a local binding for features, starting off with the
+   provided map.
+   The settings can then be queried and altered by get-compiler-feature
+   and set-compiler-feature.
+   Any feature not specified in the passed map will take on default value,
+   so the empty map starts off with default settings."
+   [start-features & body]
+   `(binding [*compiler-features* ~start-features] ~@body))
 
-   We currently accept only (comment *target* clojurescript) as marker."
-  [form]
-  (and (seq? form) (= (apply list form) '(comment *target* clojurescript))
-    (do (ana/warning {} (str "DEBUG: found a ClojureScript marker in the file: " form)) true)))
+(defn set-compiler-feature 
+  "Set one or more compiler features, via keyed parameters.
+   This includes the :target and :language features.
+   NOTE: this requires a local binding for *compiler-features* when invoked."
+  [& {:as features}]
+  (set! *compiler-features* (merge *compiler-features* features)))
+
+(defn clear-compiler-feature
+  "Clear one or more compiler features, i.e., set them to their
+   default value.
+   NOTE: this requires a local binding for *compiler-features* when invoked."
+  [& {:as features}]
+  (set! *compiler-features* (dissoc *compiler-features* (keys features))))
+
+(defn get-compiler-feature
+  "Get the value of a given compiler feature, or nil, if it does not
+   exist.
+   NOTE: this will use the default mapping for the feature in question
+   if an value is not specified in the *compiler-features* map."
+   [feature]
+   (feature (merge COMPILER-FEATURES-DEFAULTS *compiler-features*)))
+
+(defn get-compiler-features
+  "Get all compiler features and their current values (in this thread)"
+  []
+  (merge COMPILER-FEATURES-DEFAULTS *compiler-features*))
+
+(defn check-compiler-directive
+  "Checks whether the given form is a compiler directive, and if so, change
+   compiler features accordingly.
+   Will a flag indicating whether it indeed was a compiler directive.
+   It actually will return nil if not a directive."
+   [form]
+    (when-let [[fst snd & other] form]
+      (when (= `(~fst ~snd) '(comment **compiler**))
+        (ana/warning {} (str "DEBUG: found a compiler directive in the form: " form))
+        (let [first-rest (first other)
+              minus (and first-rest (= first-rest '-))
+              features (if minus (rest other) other)]
+          (apply (if minus clear-compiler-feature set-compiler-feature) features))
+        true)))
 
 (defn compile-file* [src dest]
   (with-core-cljs
@@ -762,19 +814,16 @@
                 *position* (atom [0 0])]
         (loop [forms (forms-seq src)
                ns-name nil
-               deps nil
-               is-cljs-target false] ;; not confirmed to be a CLJS file yet
+               deps nil]
           (if (seq forms)
             (let [env (ana/empty-env)
                   form (first forms)
-                  ast (ana/analyze env form)
-                  is-cljs-target
-                    (or is-cljs-target
-                        (is-target-marker form))]
+                  ast (ana/analyze env form)]
+              (check-compiler-directive form)
               (do (emit ast)
                   (if (= (:op ast) :ns)
-                    (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)) is-cljs-target)
-                    (recur (rest forms) ns-name deps is-cljs-target))))
+                    (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
+                    (recur (rest forms) ns-name deps))))
             ;; If we happened to get all the way here and managed to emit
             ;; all forms and yet not found the ClojureScript target marker,
             ;; we were lucky, and should communicate that, so that the surrounding
@@ -782,8 +831,7 @@
             {:ns (or ns-name 'cljs.user)
              :provides [ns-name]
              :requires (if (= ns-name 'cljs.core) (set (vals deps)) (conj (set (vals deps)) 'cljs.core))
-             :file dest
-             :is-cljs-file is-cljs-target}))))))
+             :file dest }))))))
 
 (defn requires-compilation?
   "Return true if the src file requires compilation."
@@ -807,11 +855,12 @@
    
    If the file could not be determined to be a ClojureScript file, we
    return {:invalid-target true :file ...}, and that case, the target file
-   was deleted.
+   was deleted, so any recipient (yes, I am talking to you, Mr. Closure.clj and
+   also to our friend Sir REPL.
 
    The way that is determined right now is to check whether the filename ends in
-   .cljs or the source file contains a special marker as any form in the file, which right now is
-     (comment *target* clojurescript)
+   .cljs or the source file contains a compiler directive setting target, such as
+      (comment **compiler** :target javascript)
    It does not have to be on the first line, but that
    is recommended."
 
@@ -820,15 +869,23 @@
            dest-file (io/file (or dest (rename-to-js src)))]
        (if (.exists src-file)
          (if (requires-compilation? src-file dest-file)
-           (do (mkdirs dest-file)
-               (let [ret (compile-file* src-file dest-file)]
-                (if (or (.endsWith (str src) ".cljs") (:is-cljs-file ret))
-                  ret
-                  (do (io/delete-file dest-file true)
+           (with-compiler-features {}
+              (let [is-cljs (.endsWith (str src) ".cljs")]
+                 (set-compiler-feature
+                  :target (if is-cljs 'javascript 'jvm)
+                  :language (if is-cljs 'clojurescript 'clojure)))
+              (ana/warning {} (str "\nDEBUG: starting compilation of " src " with compiler features " (get-compiler-features)))
+              (mkdirs dest-file)
+              (let [ret (compile-file* src-file dest-file)]
+                  (println "\nDEBUG: ended compilation of" src "with compiler features" (get-compiler-features))
+                  ;; Ok, now when it is done, check the compiler feature :target
+                  (if (= (get-compiler-feature :target) 'javascript)
+                    ret
+                    (do (io/delete-file dest-file true)
                       (println "\nWARN: removed compiled target" dest-file
                         "for source" src
-                        "since it could not be determined to target ClojureScript")                   
-                      {:file dest-file :invalid-target true}))))
+                        "since it could not be determined to target ClojureScript")
+                    {:file dest-file :invalid-target true}))))
            {:file dest-file})
          (throw (java.io.FileNotFoundException. (str "The file " src " does not exist."))))))
 
@@ -885,7 +942,7 @@
    It accepts both a second positional argument, being the output directory,
    which will default to 'out' and also key parameter :include-clj deciding
    whether to also try to compile .clj files. If including even .clj files,
-   we expect a special (comment *target* clojurescript) anywhere in
+   we expect a special (comment **compiler** :target javascript) anywhere in
    the file in order to actually compile it."
   ([src-dir & [target-dir & {:keys [include-clj]}]]
      (let [src-dir-file (io/file src-dir)]
