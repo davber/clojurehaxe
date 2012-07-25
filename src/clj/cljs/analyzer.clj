@@ -200,6 +200,8 @@
 
 (declare analyze analyze-symbol analyze-seq)
 
+(def ignored '#{defmacro})
+
 (def specials '#{if def fn* do let* loop* letfn* throw try* recur new set! ns deftype* defrecord* . js* & quote})
 
 (def ^:dynamic *recur-frames* nil)
@@ -875,7 +877,7 @@
 
 (defn macroexpand-1 [env form]
   (let [op (first form)]
-    (if (specials op)
+    (if (or (ignored op) (specials op))
       form
       (if-let [mac (and (symbol? op) (get-expander op env))]
         (binding [*ns* (create-ns *cljs-ns*)]
@@ -901,9 +903,10 @@
       (assert (not (nil? op)) "Can't call nil")
       (let [mform (macroexpand-1 env form)]
         (if (identical? form mform)
-          (if (specials op)
-            (parse op env form name)
-            (parse-invoke env form))
+          (cond
+            (specials op) (parse op env form name)
+            (ignored op)   {:op :constant :env env :form nil}
+            :else (parse-invoke env form))
           (analyze env mform name))))))
 
 (declare analyze-wrap-meta)
