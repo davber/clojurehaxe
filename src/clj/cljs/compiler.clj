@@ -107,6 +107,9 @@
   nil)
 
 (defmulti emit-constant class)
+;; For some reason, we can get classes outside of these covered,
+;; so let's just pipe them out
+(defmethod emit-constant :default [x] (emits x))
 (defmethod emit-constant nil [x] (emits "null"))
 (defmethod emit-constant Long [x] (emits x))
 (defmethod emit-constant Integer [x] (emits x)) ; reader puts Integers in metadata
