@@ -681,11 +681,9 @@
       (try (clojure.core/require nsym)
           { key nsym }
         (catch Throwable ex)))))
-        ;; TODO: this actually changes the semantics for uses and requires
-        ;; even when the :require-macros IS used.
-        uses (apply dissoc (cons uses (keys uses-macros)))
-        requires (apply dissoc (cons requires (keys requires-macros)))]
-
+      ;; NOTE: the files will be tried by ClojureScript even if
+      ;; Clojure did manage to require them
+      ]
         (swap! namespaces #(-> %
                                (assoc-in [name :name] name)
                                (assoc-in [name :excludes] excludes)
