@@ -362,7 +362,7 @@
   [^File src-dir opts]
   (let [out-dir (output-directory opts)]
     (map compiled-file
-         (comp/compile-root src-dir out-dir))))
+         (comp/compile-root src-dir out-dir :include-clj true))))
 
 (defn path-from-jarfile
   "Given the URL of a file within a jar, return the path of the file

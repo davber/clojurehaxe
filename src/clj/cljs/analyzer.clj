@@ -672,15 +672,15 @@
       uses-macros
       (or uses-macros (apply merge
         (for [[key nsym] uses]
-          (try (clojure.core/require nsym) (println "DEBUG: loaded use ns" nsym " into JVM")
+          (try (clojure.core/require nsym)
             { key nsym }
-            (catch Throwable ex (println "WARN: failed to load use ns" nsym " into JVM"))))))
+            (catch Throwable ex)))))
       requires-macros
       (or requires-macros (apply merge
       (for [[key nsym] requires]
-      (try (clojure.core/require nsym) (println "DEBUG: loaded require ns" nsym " into JVM")
+      (try (clojure.core/require nsym)
           { key nsym }
-        (catch Throwable ex (println "WARN: failed to load require ns" nsym " into JVM"))))))
+        (catch Throwable ex)))))
         ;; TODO: this actually changes the semantics for uses and requires
         ;; even when the :require-macros IS used.
         uses (apply dissoc (cons uses (keys uses-macros)))

@@ -71,17 +71,18 @@
     (let [repl-env @current-repl-env
           path (string/replace (comp/munge rule) \. java.io.File/separatorChar)
           cljs-path (str path ".cljs")
+          clj-path (str path ".clj")
           js-path (str "goog/"
                        (-eval (str "goog.dependencies_.nameToPath['" rule "']")
                               repl-env
                               "<cljs repl>"
                               1))]
-      (if-let [res (io/resource cljs-path)]
+      (if-let [res (or (io/resource cljs-path) (io/resource clj-path))]
         (binding [ana/*cljs-ns* 'cljs.user]
           (repl/load-stream repl-env res))
         (if-let [res (io/resource js-path)]
           (-eval (io/reader res) repl-env js-path 1)
-          (throw (Exception. (str "Cannot find " cljs-path " or " js-path " in classpath")))))
+          (throw (Exception. (str "Cannot find " cljs-path " (or " clj-path ") or " js-path " in classpath")))))
       (swap! loaded-libs conj rule))))
 
 (defn load-javascript [repl-env ns url]

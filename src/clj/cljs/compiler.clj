@@ -726,10 +726,10 @@
        (.close rdr))))
 
 (defn rename-to-js
-  "Change the file extension from .cljs to .js. Takes a File or a
+  "Change the file extension from either .clj or .cljs to .js. Takes a File or a
   String. Always returns a String."
   [file-str]
-  (clojure.string/replace file-str #"\.cljs$" ".js"))
+  (clojure.string/replace file-str #"\.cljs?$" ".js"))
 
 (defn mkdirs
   "Create all parent directories for the passed file."
@@ -743,6 +743,15 @@
          (ana/analyze-file "cljs/core.cljs"))
        ~@body))
 
+(defn is-target-marker
+  "Checks whether the specified form is considered a marker for targeting
+   ClojureScript.
+
+   We currently accept only (comment *target* clojurescript) as marker."
+  [form]
+  (and (seq? form) (= (apply list form) '(comment *target* clojurescript))
+    (do (ana/warning {} (str "DEBUG: found a ClojureScript marker in the file: " form)) true)))
+
 (defn compile-file* [src dest]
   (with-core-cljs
     (with-open [out ^java.io.Writer (io/make-writer dest {})]
@@ -753,18 +762,28 @@
                 *position* (atom [0 0])]
         (loop [forms (forms-seq src)
                ns-name nil
-               deps nil]
+               deps nil
+               is-cljs-target false] ;; not confirmed to be a CLJS file yet
           (if (seq forms)
             (let [env (ana/empty-env)
-                  ast (ana/analyze env (first forms))]
+                  form (first forms)
+                  ast (ana/analyze env form)
+                  is-cljs-target
+                    (or is-cljs-target
+                        (is-target-marker form))]
               (do (emit ast)
                   (if (= (:op ast) :ns)
-                    (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
-                    (recur (rest forms) ns-name deps))))
+                    (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)) is-cljs-target)
+                    (recur (rest forms) ns-name deps is-cljs-target))))
+            ;; If we happened to get all the way here and managed to emit
+            ;; all forms and yet not found the ClojureScript target marker,
+            ;; we were lucky, and should communicate that, so that the surrounding
+            ;; can deal with it in its own way.
             {:ns (or ns-name 'cljs.user)
              :provides [ns-name]
              :requires (if (= ns-name 'cljs.core) (set (vals deps)) (conj (set (vals deps)) 'cljs.core))
-             :file dest}))))))
+             :file dest
+             :is-cljs-file is-cljs-target}))))))
 
 (defn requires-compilation?
   "Return true if the src file requires compilation."
@@ -784,19 +803,34 @@
    Both src and dest may be either a String or a File.
 
    Returns a map containing {:ns .. :provides .. :requires .. :file ..}.
-   If the file was not compiled returns only {:file ...}"
-  ([src]
-     (let [dest (rename-to-js src)]
-       (compile-file src dest)))
-  ([src dest]
+   If the file was not compiled returns only {:file ...}.
+   
+   If the file could not be determined to be a ClojureScript file, we
+   return {:invalid-target true :file ...}, and that case, the target file
+   was deleted.
+
+   The way that is determined right now is to check whether the filename ends in
+   .cljs or the source file contains a special marker as any form in the file, which right now is
+     (comment *target* clojurescript)
+   It does not have to be on the first line, but that
+   is recommended."
+
+  [src & [dest]]
      (let [src-file (io/file src)
-           dest-file (io/file dest)]
+           dest-file (io/file (or dest (rename-to-js src)))]
        (if (.exists src-file)
          (if (requires-compilation? src-file dest-file)
            (do (mkdirs dest-file)
-               (compile-file* src-file dest-file))
+               (let [ret (compile-file* src-file dest-file)]
+                (if (or (.endsWith (str src) ".cljs") (:is-cljs-file ret))
+                  ret
+                  (do (io/delete-file dest-file true)
+                      (println "\nWARN: removed compiled target" dest-file
+                        "for source" src
+                        "since it could not be determined to target ClojureScript")                   
+                      {:file dest-file :invalid-target true}))))
            {:file dest-file})
-         (throw (java.io.FileNotFoundException. (str "The file " src " does not exist.")))))))
+         (throw (java.io.FileNotFoundException. (str "The file " src " does not exist."))))))
 
 (comment
   ;; flex compile-file
@@ -832,10 +866,12 @@
     (java.io.File. parent-file ^String (rename-to-js (last relative-path)))))
 
 (defn cljs-files-in
-  "Return a sequence of all .cljs files in the given directory."
-  [dir]
+  "Return a sequence of all .cljs files in the given directory.
+   It accepts a key parameter :include-clj to decide whether
+   to also look for .clj files."
+  [dir & {:keys [include-clj]}]
   (filter #(let [name (.getName ^java.io.File %)]
-             (and (.endsWith name ".cljs")
+             (and (or (.endsWith name ".cljs") (and include-clj (.endsWith name ".clj")))
                   (not= \. (first name))
                   (not (contains? cljs-reserved-file-names name))))
           (file-seq dir)))
@@ -845,18 +881,25 @@
    .js files. If target-dir is provided, output will go into this
    directory mirroring the source directory structure. Returns a list
    of maps containing information about each file which was compiled
-   in dependency order."
-  ([src-dir]
-     (compile-root src-dir "out"))
-  ([src-dir target-dir]
+   in dependency order.
+   It accepts both a second positional argument, being the output directory,
+   which will default to 'out' and also key parameter :include-clj deciding
+   whether to also try to compile .clj files. If including even .clj files,
+   we expect a special (comment *target* clojurescript) anywhere in
+   the file in order to actually compile it."
+  ([src-dir & [target-dir & {:keys [include-clj]}]]
      (let [src-dir-file (io/file src-dir)]
-       (loop [cljs-files (cljs-files-in src-dir-file)
+       (loop [cljs-files (cljs-files-in src-dir-file :include-clj include-clj)
               output-files []]
          (if (seq cljs-files)
            (let [cljs-file (first cljs-files)
-                 output-file ^java.io.File (to-target-file src-dir-file target-dir cljs-file)
+                 output-file ^java.io.File (to-target-file src-dir-file
+                  (or target-dir "out") cljs-file)
                  ns-info (compile-file cljs-file output-file)]
-             (recur (rest cljs-files) (conj output-files (assoc ns-info :file-name (.getPath output-file)))))
+             (recur (rest cljs-files) 
+               (if (:invalid-target ns-info)
+                 output-files ;; yes, we skip invalid targeted files (i.e., non-ClojureScript files)
+                 (conj output-files (assoc ns-info :file-name (.getPath output-file))))))
            output-files)))))
 
 (comment
