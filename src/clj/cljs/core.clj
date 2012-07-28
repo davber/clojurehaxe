@@ -436,7 +436,7 @@
   (symbol (core/str "-" sym)))
 
 (defmacro extend-type [tsym & impls]
-  (let [resolve #(let [ret (:name (cljs.analyzer/resolve-var (dissoc &env :locals) %))]
+  (let [resolve #(let [ret (:name (cljs.analyzer/resolve-existing-var (dissoc &env :locals) %))]
                    (assert ret (core/str "Can't resolve: " %))
                    ret)
         impl-map (loop [ret {} s impls]

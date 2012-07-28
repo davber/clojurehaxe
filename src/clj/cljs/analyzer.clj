@@ -15,6 +15,16 @@
             [cljs.tagged-literals :as tags])
   (:import java.lang.StringBuilder))
 
+(def ^:private ^:const COMPILER-FEATURES-DEFAULTS { :target 'javascript :language 'clojurescript :ignore-macros-in-source true })
+;; You can explicitly set the language feature by a compiler directive
+;;   (comment **compiler** :feature value)
+;; and the compiler itself can change features according to simple heuristics, such as
+;; a via the file ending: .cljs implies { :target javascript :language clojurescript }
+;; and .clj implies { :target jvm :language clojure } so that no JavaScript will be output.
+;; The proper way to interact with these settings is to use
+;;    with-compiler-features, get-compiler-feature and set-compiler-feature
+(def ^:dynamic *compiler-features* {})
+
 (declare resolve-var)
 (declare resolve-existing-var)
 (declare warning)
@@ -81,6 +91,58 @@
 (defn empty-env []
   {:ns (@namespaces *cljs-ns*) :context :statement :locals {}})
 
+(defmacro with-compiler-features
+  "Creates a local binding for features, starting off with the
+   provided map.
+   The settings can then be queried and altered by get-compiler-feature
+   and set-compiler-feature.
+   Any feature not specified in the passed map will take on default value,
+   so the empty map starts off with default settings."
+   [start-features & body]
+   `(binding [*compiler-features* ~start-features] ~@body))
+
+(defn set-compiler-feature 
+  "Set one or more compiler features, via keyed parameters.
+   This includes the :target and :language features.
+   NOTE: this requires a local binding for *compiler-features* when invoked."
+  [& {:as features}]
+  (set! *compiler-features* (merge *compiler-features* features)))
+
+(defn clear-compiler-feature
+  "Clear one or more compiler features, i.e., set them to their
+   default value.
+   NOTE: this requires a local binding for *compiler-features* when invoked."
+  [& {:as features}]
+  (set! *compiler-features* (dissoc *compiler-features* (keys features))))
+
+(defn get-compiler-feature
+  "Get the value of a given compiler feature, or nil, if it does not
+   exist.
+   NOTE: this will use the default mapping for the feature in question
+   if an value is not specified in the *compiler-features* map."
+   [feature]
+   (feature (merge COMPILER-FEATURES-DEFAULTS *compiler-features*)))
+
+(defn get-compiler-features
+  "Get all compiler features and their current values (in this thread)"
+  []
+  (merge COMPILER-FEATURES-DEFAULTS *compiler-features*))
+
+(defn check-compiler-directive
+  "Checks whether the given form is a compiler directive, and if so, change
+   compiler features accordingly.
+   Will a flag indicating whether it indeed was a compiler directive.
+   It actually will return nil if not a directive."
+   [form]
+    (when-let [[fst snd & other] form]
+      (when (= `(~fst ~snd) '(comment **compiler**))
+        (warning {} (str "DEBUG: found a compiler directive in the form: " form))
+        (let [first-rest (first other)
+              minus (and first-rest (= first-rest '-))
+              features (if minus (rest other) other)]
+          (apply (if minus clear-compiler-feature set-compiler-feature) features))
+        true)))
+
 (defmacro ^:private debug-prn
   [& args]
   `(.println System/err (str ~@args)))
@@ -99,7 +161,7 @@
           (warning env
             (str "WARNING: Use of undeclared Var " prefix "/" suffix)))))))
 
-(defn resolve-ns-alias [env name]
+(defn resolve-ns-alias [env name & {:keys [only-macros]}]
   (let [sym (symbol name)]
     (get (:requires (:ns env)) sym sym)))
 
@@ -109,7 +171,42 @@
   (and (get (:defs (@namespaces 'cljs.core)) sym)
        (not (contains? (-> env :ns :excludes) sym))))
 
-(defn resolve-existing-var [env sym]
+(defn old-resolve-var [env sym]
+  (if (= (namespace sym) "js")
+    {:name sym}
+    (let [s (str sym)
+          lb (-> env :locals sym)]
+      (cond
+       lb lb
+
+       (namespace sym)
+       (let [ns (namespace sym)
+             ns (if (= "clojure.core" ns) "cljs.core" ns)]
+         {:name (symbol (str (resolve-ns-alias env ns)) (name sym))})
+
+       (.contains s ".")
+       (let [idx (.indexOf s ".")
+             prefix (symbol (subs s 0 idx))
+             suffix (subs s idx)
+             lb (-> env :locals prefix)]
+         (if lb
+           {:name (symbol (str (:name lb) suffix))}
+           {:name sym}))
+
+       (get-in @namespaces [(-> env :ns :name) :uses sym])
+       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
+         (merge
+          (get-in @namespaces [full-ns :defs sym])
+          {:name (symbol (str full-ns) (name sym))}))
+
+       :else
+       (let [ns (if (core-name? env sym)
+                  'cljs.core
+                  (-> env :ns :name))]
+         {:name (symbol (str ns) (name sym))})))))
+
+
+(defn old-resolve-existing-var [env sym]
   (if (= (namespace sym) "js")
     {:name sym :ns 'js}
     (let [s (str sym)
@@ -155,39 +252,64 @@
            {:name (symbol (str full-ns) (str sym))
             :ns full-ns}))))))
 
-(defn resolve-var [env sym]
-  (if (= (namespace sym) "js")
-    {:name sym}
-    (let [s (str sym)
-          lb (-> env :locals sym)]
-      (cond
-       lb lb
+(defn resolve-existing-var
+  [env sym]
+  (resolve-var env sym :confirm-existence true))
 
-       (namespace sym)
-       (let [ns (namespace sym)
-             ns (if (= "clojure.core" ns) "cljs.core" ns)]
-         {:name (symbol (str (resolve-ns-alias env ns)) (name sym))})
+(defn resolve-var
+ "Resolve any kind symbol, qualified or not.
+  It accepts a key parameter :only-macros which decides whether
+  we should only look for macro definition(s...) of this symbol.
+  The reason being that the lookup strategy can be different for
+  macros, depending on the compiler feature :ignore-macros-in-source.
+  It also accepts a :confirm-existence which will warn if the var
+  did not exist.
+  Default for both flags is false."
+  [env sym & {:keys [only-macros confirm-existence]}]
 
-       (.contains s ".")
-       (let [idx (.indexOf s ".")
-             prefix (symbol (subs s 0 idx))
-             suffix (subs s idx)
-             lb (-> env :locals prefix)]
-         (if lb
-           {:name (symbol (str (:name lb) suffix))}
-           {:name sym}))
+  (#(let [their ((if confirm-existence old-resolve-existing-var old-resolve-var) env sym)]
+    (if (or (nil? %) (not= % their))
+      (do (warning env (str "\nDEBUG: confirming existence is " confirm-existence " and we resolved name " sym " to symbol " % " while they resolved to " their
+        " and we trust ourselves. Symbol had core?=" (core-name? env sym) " and local variable was " (-> env :locals sym)
+        " and via uses was " (get-in @namespaces [(-> env :ns :name) :uses sym]) " and current ns is "
+        (-> env :ns :name))) %)
+      %))
+  (let [look-everywhere (not (and only-macros (get-compiler-feature :ignore-macros-in-source)))
+        lb (-> env :locals sym)
+        core-ns-sym 'cljs.core
+        sym-parts (if (namespace sym) [(namespace sym), (name sym)] (string/split (str sym) #"\." 2))
+        sym-name ^String (last sym-parts)
+        local-ns (get @namespaces (-> env :ns :name))
+        ns-alias ^String (string/replace
+          (if (= (count sym-parts) 2) (first sym-parts) "")
+          "clojure.core"
+          (name core-ns-sym))
+        ;; NOTE: is-core ignores the current ns being the core one
+        is-core (or (= ns-alias (name core-ns-sym)) (core-name? env sym))
+        ns-sym ^Symbol (cond
+          (not (string/blank? ns-alias)) (resolve-ns-alias env ns-alias :only-macros only-macros)
+          is-core core-ns-sym
+          (and confirm-existence (not only-macros) look-everywhere (get-in local-ns [:uses sym-name]))
+            (get-in local-ns [:uses sym-name])
+          (when (and confirm-existence only-macros) (get-in local-ns [:uses-macros sym-name]))
+            (get-in local-ns [:uses-macros] sym-name)
+          :else (-> env :ns :name))
+        new-def (cond
+         lb lb
+         ns-sym {:name (symbol (name ns-sym) sym-name) :ns ns-sym}
+         :else {:name sym})
+        prev-def (when ns-sym (get-in @namespaces [ns-sym :defs (symbol sym-name)]))]
 
-       (get-in @namespaces [(-> env :ns :name) :uses sym])
-       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
-         (merge
-          (get-in @namespaces [full-ns :defs sym])
-          {:name (symbol (str full-ns) (name sym))}))
+    (when confirm-existence (confirm-var-exists env ns-sym (symbol sym-name)))
 
-       :else
-       (let [ns (if (core-name? env sym)
-                  'cljs.core
-                  (-> env :ns :name))]
-         {:name (symbol (str ns) (name sym))})))))
+    ;; Voila: the actual action... 
+    ;; For core symbols, we strip everything but the :name key, and
+    ;; for other symbols, we keep only :name and :ns when not confirming existence.
+    ;; TODO: it is quite inconsistent to provide everything for unqualified core symbols but
+    ;; only :name and :ns for qualified core symbols, but we keep the existing semantics for now.
+    ((if (and (= ns-sym core-ns-sym) (string/blank? ns-alias) (not confirm-existence))
+      #(select-keys % [:name]) identity)
+      (merge prev-def new-def)))))
 
 (defn confirm-bindings [env names]
   (doseq [name names]
@@ -514,7 +636,7 @@
   (let [context (:context env)
         frame (first *recur-frames*)
         exprs (disallowing-recur (vec (map #(analyze (assoc env :context :expr) %) exprs)))]
-    (assert frame "Can't recur here")
+    (assert frame (str "Can't recur here, in form: " form))
     (assert (= (count exprs) (count (:names frame))) "recur argument count mismatch")
     (reset! (:flag frame) true)
     (assoc {:env env :op :recur :form form}
@@ -862,13 +984,14 @@
                                (get-in @namespaces [(-> env :ns :name) :excludes sym]))
                            (not (or (-> env :ns :uses-macros sym)
                                     (get-in @namespaces [(-> env :ns :name) :uses-macros sym])))))
-          (if-let [nstr (namespace sym)]
+          ;; (warning env (str "\nDEBUG: expanding macro and passed first phase, with sym" sym))
+          (if-let [nstr (namespace sym)] (do
             (when-let [ns (cond
                            (= "clojure.core" nstr) (find-ns 'cljs.core)
                            (.contains nstr ".") (find-ns (symbol nstr))
                            :else
                            (-> env :ns :requires-macros (get (symbol nstr))))]
-              (.findInternedVar ^clojure.lang.Namespace ns (symbol (name sym))))
+              (.findInternedVar ^clojure.lang.Namespace ns (symbol (name sym)))))
             (if-let [nsym (-> env :ns :uses-macros sym)]
               (.findInternedVar ^clojure.lang.Namespace (find-ns nsym) sym)
               (.findInternedVar ^clojure.lang.Namespace (find-ns 'cljs.core) sym))))]

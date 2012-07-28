@@ -33,15 +33,6 @@
     "volatile" "while" "with" "yield" "methods"})
 
 (def ^:dynamic *position* nil)
-(def ^:private ^:const COMPILER-FEATURES-DEFAULTS { :target 'javascript :language 'clojurescript })
-;; You can explicitly set the language feature by a compiler directive
-;;   (comment **compiler** :feature value)
-;; and the compiler itself can change features according to simple heuristics, such as
-;; a via the file ending: .cljs implies { :target javascript :language clojurescript }
-;; and .clj implies { :target jvm :language clojure } so that no JavaScript will be output.
-;; The proper way to interact with these settings is to use
-;;    with-compiler-features, get-compiler-feature and set-compiler-feature
-(def ^:private ^:dynamic *compiler-features* { :target :default :language :default })
 (def cljs-reserved-file-names #{"deps.cljs"})
 
 (defn munge
@@ -752,58 +743,6 @@
          (ana/analyze-file "cljs/core.cljs"))
        ~@body))
 
-(defmacro with-compiler-features
-  "Creates a local binding for features, starting off with the
-   provided map.
-   The settings can then be queried and altered by get-compiler-feature
-   and set-compiler-feature.
-   Any feature not specified in the passed map will take on default value,
-   so the empty map starts off with default settings."
-   [start-features & body]
-   `(binding [*compiler-features* ~start-features] ~@body))
-
-(defn set-compiler-feature 
-  "Set one or more compiler features, via keyed parameters.
-   This includes the :target and :language features.
-   NOTE: this requires a local binding for *compiler-features* when invoked."
-  [& {:as features}]
-  (set! *compiler-features* (merge *compiler-features* features)))
-
-(defn clear-compiler-feature
-  "Clear one or more compiler features, i.e., set them to their
-   default value.
-   NOTE: this requires a local binding for *compiler-features* when invoked."
-  [& {:as features}]
-  (set! *compiler-features* (dissoc *compiler-features* (keys features))))
-
-(defn get-compiler-feature
-  "Get the value of a given compiler feature, or nil, if it does not
-   exist.
-   NOTE: this will use the default mapping for the feature in question
-   if an value is not specified in the *compiler-features* map."
-   [feature]
-   (feature (merge COMPILER-FEATURES-DEFAULTS *compiler-features*)))
-
-(defn get-compiler-features
-  "Get all compiler features and their current values (in this thread)"
-  []
-  (merge COMPILER-FEATURES-DEFAULTS *compiler-features*))
-
-(defn check-compiler-directive
-  "Checks whether the given form is a compiler directive, and if so, change
-   compiler features accordingly.
-   Will a flag indicating whether it indeed was a compiler directive.
-   It actually will return nil if not a directive."
-   [form]
-    (when-let [[fst snd & other] form]
-      (when (= `(~fst ~snd) '(comment **compiler**))
-        (ana/warning {} (str "DEBUG: found a compiler directive in the form: " form))
-        (let [first-rest (first other)
-              minus (and first-rest (= first-rest '-))
-              features (if minus (rest other) other)]
-          (apply (if minus clear-compiler-feature set-compiler-feature) features))
-        true)))
-
 (defn compile-file* [src dest]
   (with-core-cljs
     (with-open [out ^java.io.Writer (io/make-writer dest {})]
@@ -819,7 +758,7 @@
             (let [env (ana/empty-env)
                   form (first forms)
                   ast (ana/analyze env form)]
-              (check-compiler-directive form)
+              (ana/check-compiler-directive form)
               (do (emit ast)
                   (if (= (:op ast) :ns)
                     (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
@@ -869,17 +808,17 @@
            dest-file (io/file (or dest (rename-to-js src)))]
        (if (.exists src-file)
          (if (requires-compilation? src-file dest-file)
-           (with-compiler-features {}
+           (ana/with-compiler-features {}
               (let [is-cljs (.endsWith (str src) ".cljs")]
-                 (set-compiler-feature
+                 (ana/set-compiler-feature
                   :target (if is-cljs 'javascript 'jvm)
                   :language (if is-cljs 'clojurescript 'clojure)))
-              (ana/warning {} (str "\nDEBUG: starting compilation of " src " with compiler features " (get-compiler-features)))
+              (ana/warning {} (str "\nDEBUG: starting compilation of " src " with compiler features " (ana/get-compiler-features)))
               (mkdirs dest-file)
               (let [ret (compile-file* src-file dest-file)]
-                  (println "\nDEBUG: ended compilation of" src "with compiler features" (get-compiler-features))
+                  (println "\nDEBUG: ended compilation of" src "with compiler features" (ana/get-compiler-features))
                   ;; Ok, now when it is done, check the compiler feature :target
-                  (if (= (get-compiler-feature :target) 'javascript)
+                  (if (= (ana/get-compiler-feature :target) 'javascript)
                     ret
                     (do (io/delete-file dest-file true)
                       (println "\nWARN: removed compiled target" dest-file

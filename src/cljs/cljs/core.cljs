@@ -5511,8 +5511,10 @@ reduces them without incurring seq initialization"
   the first.  If a key occurs in more than one map, the mapping from
   the latter (left-to-right) will be the mapping in the result."
   [& maps]
+  (try
   (when (some identity maps)
-    (reduce #(conj (or %1 {}) %2) maps)))
+    (reduce #(conj (or %1 {}) %2) maps))
+  (catch js/Error er (throw (apply str "Could not merge these maps: " maps)))))
 
 (defn merge-with
   "Returns a map that consists of the rest of the maps conj-ed onto
