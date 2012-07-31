@@ -10,18 +10,24 @@
 
 (ns cljs.analyzer
   (:refer-clojure :exclude [macroexpand-1])
+  (:use [clojure.core.incubator :only (-?>> -?>)]
+        [clojure.algo.monads :only
+         (domonad monad-transformer with-monad maybe-m identity-m writer-m)])
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [cljs.tagged-literals :as tags])
   (:import java.lang.StringBuilder))
 
-(def ^:private ^:const COMPILER-FEATURES-DEFAULTS { :target 'javascript :language 'clojurescript :ignore-macros-in-source true })
+(def ^{:private true :const true} COMPILER-FEATURES-DEFAULTS
+  {:target 'javascript :language 'clojurescript :ignore-macros-in-source true})
 ;; You can explicitly set the language feature by a compiler directive
 ;;   (comment **compiler** :feature value)
-;; and the compiler itself can change features according to simple heuristics, such as
-;; a via the file ending: .cljs implies { :target javascript :language clojurescript }
-;; and .clj implies { :target jvm :language clojure } so that no JavaScript will be output.
-;; The proper way to interact with these settings is to use
+;; and the compiler itself can change features according to simple
+;; heuristics, such as via the file ending: .cljs implies
+;; { :target javascript :language clojurescript }
+;; and .clj implies { :target jvm :language clojure } so that no
+;; JavaScript will
+;; be output. The proper way to interact with these settings is to use
 ;;    with-compiler-features, get-compiler-feature and set-compiler-feature
 (def ^:dynamic *compiler-features* {})
 
@@ -63,6 +69,44 @@
 (def ^:dynamic *cljs-macros-path* "/cljs/core")
 (def ^:dynamic *cljs-macros-is-classpath* true)
 (def  -cljs-macros-loaded (atom false))
+
+;; We define a truth-yielding warning variant, which can be used
+;; easily in a maybe monad, since nil breaks out.
+
+(defmacro warning-t
+  "Output a message while yielding true, to be used in and forms and maybe monads.
+   NOTE: it currently has a limit of 500 characters, not to puke all over the screen.
+   TODO: please change the name since the ending '-t' indicates monad transformation,
+   which it not is."
+  [env & args]
+  `(do (warning ~env (let [text# (str ~@args)] (subs text# 0 (min (count text#) 500)))) true))
+
+(defn trace-t
+  "This is a monad transformer injecting trace points in returns and binds.
+   You can supply a :return-tracer and/or :bind-tracer parameter.
+   The return tracer will be called with a non-monadic value before
+   the return. The bind tracer will be called with a monadic value before
+   the bind.
+   The default return tracer uses the warning function for simple output
+   while the bind tracer just outputs the type of the monadic value since those
+   can be pretty big and/or lazy."
+  [m & {:keys [return-tracer, bind-tracer] :or
+        {return-tracer #(warning-t nil "trace-t: about to return '" % "'")
+         bind-tracer (fn [mv] (warning-t nil "trace-t: about to bind value of type " (type mv)))}}]
+  (monad-transformer m :m-plus-from-base
+                     [m-result (with-monad m (fn [v] (return-tracer v) (m-result v)))
+                      m-bind (with-monad m (fn [mv f] (bind-tracer mv) (m-bind mv f)))]))
+
+(defmacro domonad-or
+  "Performs a monad comprehension but switches to the second monad if the run
+   through the first one yielded mzero. This gives us a chance to retrace steps
+   when something went wrong. Like a combination of exception handling and
+   backtracking. We currently use it to inject tracing on the second attempt."
+  [m1 m2 & rest]
+  ;; TODO: we assume mzero is a false value, not good.
+  `(or (domonad ~m1 ~@rest) (domonad ~m2 ~@rest)))
+
+
 
 (defn load-core []
   (when (not @-cljs-macros-loaded)
@@ -136,7 +180,7 @@
    [form]
     (when-let [[fst snd & other] form]
       (when (= `(~fst ~snd) '(comment **compiler**))
-        (warning {} (str "DEBUG: found a compiler directive in the form: " form))
+      (warning-t {} "DEBUG: found a compiler directive in the form: " form)
         (let [first-rest (first other)
               minus (and first-rest (= first-rest '-))
               features (if minus (rest other) other)]
@@ -267,17 +311,27 @@
   Default for both flags is false."
   [env sym & {:keys [only-macros confirm-existence]}]
 
-  (#(let [their ((if confirm-existence old-resolve-existing-var old-resolve-var) env sym)]
-    (if (or (nil? %) (not= % their))
-      (do (warning env (str "\nDEBUG: confirming existence is " confirm-existence " and we resolved name " sym " to symbol " % " while they resolved to " their
-        " and we trust ourselves. Symbol had core?=" (core-name? env sym) " and local variable was " (-> env :locals sym)
-        " and via uses was " (get-in @namespaces [(-> env :ns :name) :uses sym]) " and current ns is "
-        (-> env :ns :name))) %)
+  (#(let [their ((if confirm-existence old-resolve-existing-var old-resolve-var)
+                 env sym)]
+      (if (and (not only-macros) (not= (get (name sym) 0) \.)
+               (or (nil? %) (= % their)))
+        (do (warning-t env "\nDEBUG: [resolve-var] confirming existence is "
+                       (not (not confirm-existence))
+                       " only macros is " (not (not only-macros))
+                       " and we resolved name " sym " to symbol " %
+                       " while they resolved to " their
+                       " and we trust ourselves. Symbol had core?="
+                       (core-name? env sym) " and local variable was "
+                       (-> env :locals sym) " and via uses was "
+                       (get-in @namespaces [(-> env :ns :name) :uses sym])
+                       " and current ns is " (-> env :ns :name)) %)
       %))
-  (let [look-everywhere (not (and only-macros (get-compiler-feature :ignore-macros-in-source)))
+   (let [look-everywhere
+         (not (and only-macros (get-compiler-feature :ignore-macros-in-source)))
         lb (-> env :locals sym)
         core-ns-sym 'cljs.core
-        sym-parts (if (namespace sym) [(namespace sym), (name sym)] (string/split (str sym) #"\." 2))
+         sym-parts (if (namespace sym) [(namespace sym), (name sym)]
+                       (string/split (str sym) #"\b\." 2))
         sym-name ^String (last sym-parts)
         local-ns (get @namespaces (-> env :ns :name))
         ns-alias ^String (string/replace
@@ -287,13 +341,19 @@
         ;; NOTE: is-core ignores the current ns being the core one
         is-core (or (= ns-alias (name core-ns-sym)) (core-name? env sym))
         ns-sym ^Symbol (cond
-          (not (string/blank? ns-alias)) (resolve-ns-alias env ns-alias :only-macros only-macros)
+                          (not (string/blank? ns-alias))
+                          (resolve-ns-alias env ns-alias :only-macros only-macros)
           is-core core-ns-sym
-          (and confirm-existence (not only-macros) look-everywhere (get-in local-ns [:uses sym-name]))
+                          (and confirm-existence look-everywhere
+                               (get-in local-ns [:uses sym-name]))
             (get-in local-ns [:uses sym-name])
-          (when (and confirm-existence only-macros) (get-in local-ns [:uses-macros sym-name]))
+                          (when (and confirm-existence only-macros)
+                            (get-in local-ns [:uses-macros sym-name]))
             (get-in local-ns [:uses-macros] sym-name)
-          :else (-> env :ns :name))
+                          (not confirm-existence)
+                          (-> env :ns :name)
+                          only-macros nil
+                          :else core-ns-sym)
         new-def (cond
          lb lb
          ns-sym {:name (symbol (name ns-sym) sym-name) :ns ns-sym}
@@ -636,6 +696,7 @@
   (let [context (:context env)
         frame (first *recur-frames*)
         exprs (disallowing-recur (vec (map #(analyze (assoc env :context :expr) %) exprs)))]
+    (when-not frame (warning env (str "\nERROR: trying to recur without a proper frame in form " form)))
     (assert frame (str "Can't recur here, in form: " form))
     (assert (= (count exprs) (count (:names frame))) "recur argument count mismatch")
     (reset! (:flag frame) true)
@@ -977,14 +1038,13 @@
       (assoc ret :op :var :info lb)
       (assoc ret :op :var :info (resolve-existing-var env sym)))))
 
-(defn get-expander [sym env]
+(defn old-get-expander [sym env]
   (let [mvar
         (when-not (or (-> env :locals sym)        ;locals hide macros
                       (and (or (-> env :ns :excludes sym)
                                (get-in @namespaces [(-> env :ns :name) :excludes sym]))
                            (not (or (-> env :ns :uses-macros sym)
                                     (get-in @namespaces [(-> env :ns :name) :uses-macros sym])))))
-          ;; (warning env (str "\nDEBUG: expanding macro and passed first phase, with sym" sym))
           (if-let [nstr (namespace sym)] (do
             (when-let [ns (cond
                            (= "clojure.core" nstr) (find-ns 'cljs.core)
@@ -997,6 +1057,36 @@
               (.findInternedVar ^clojure.lang.Namespace (find-ns 'cljs.core) sym))))]
     (when (and mvar (.isMacro ^clojure.lang.Var mvar))
       @mvar)))
+
+;; (def old-get-expander get-expander)
+(defn get-expander
+  "Finding a macro definition, using the general resolve-var function.
+   TODO: please use the same order between the env and sym arguments everywhere!"
+  [sym env]
+  ;; TODO: please use a writer monad instead
+  (#(let [their (old-get-expander sym env)]
+      (when (not= % their) (let [sym-def (resolve-var env sym :uses-macros true :confirm-existence true)
+                                 core-ns (find-ns 'cljs.core)
+                                 ns-name (:ns sym-def)
+                                 ns (when ns-name (find-ns ns-name))]
+                             (warning-t env "\nDEBUG: [get-expander] we resolved macro symbol " sym " to "
+                                        % " while they resolved to " their " and we used symbol definition " sym-def " and found its ns = "
+                                        (not (not ns)))
+                             (warning-t env "\nDEBUG: Just for fun, we check the var associated with the passed symbol (" sym ") in the cljs.core ns: "
+                                        (.findInternedVar ^clojure.lang.Namespace core-ns sym))
+                             (warning-t env "\nDEBUG: where the value is " (when (.findInternedVar ^clojure.lang.Namespace core-ns sym)
+                                                                             @(.findInternedVar ^clojure.lang.Namespace core-ns sym)))
+                             (warning-t env "\nDEBUG: And the var associated with " (symbol (name (:name sym-def))) " is: "
+                                        (when ns (.findInternedVar ^clojure.lang.Namespace ns (symbol (name (:name sym-def))))))))
+      %)
+   (domonad maybe-m
+            [sym-def (resolve-var env sym :uses-macros true :confirm-existence true)
+             ns-name (or (:ns sym-def) 'cljs.core)
+             ns-obj (find-ns ns-name)
+             lookup-sym (symbol (name (:name sym-def)))
+             ^clojure.lang.Var mvar (.findInternedVar  ^clojure.lang.Namespace ns-obj lookup-sym)
+             ok (.isMacro mvar)]
+            @mvar)))
 
 (defn macroexpand-1 [env form]
   (let [op (first form)]
@@ -1014,8 +1104,7 @@
              (= (last opname) \.) (with-meta
                                     (list* 'new (symbol (subs opname 0 (dec (count opname)))) (next form))
                                     (meta form))
-             :else form))
-          form)))))
+              :else form)))))))
 
 (defn analyze-seq
   [env form name]
