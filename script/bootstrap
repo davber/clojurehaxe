@@ -9,8 +9,22 @@ curl -O -s http://repo1.maven.org/maven2/org/clojure/clojure/1.4.0/clojure-1.4.0
 unzip -qu clojure-1.4.0.zip
 echo "Copying clojure-1.4.0/clojure-1.4.0.jar to lib/clojure.jar..."
 cp clojure-1.4.0/clojure-1.4.0.jar lib/clojure.jar
-echo "Cleaning up Clojure directory..."
+echo "Fetching Clojure core.incubator..."
+curl -O -s http://repo1.maven.org/maven2/org/clojure/core.incubator/0.1.1/core.incubator-0.1.1.jar
+echo "Copying core.incubator-0.1.1.jar to lib/core.incubator.jar..."
+cp core.incubator-0.1.1.jar lib/core.incubator.jar
+echo "Fetching Clojure algo.monads..."
+curl -O -s http://repo1.maven.org/maven2/org/clojure/algo.monads/0.1.0/algo.monads-0.1.0.jar
+echo "Copying algo.monads-0.1.0.jar to lib/algo.monads.jar..."
+cp algo.monads-0.1.0.jar lib/algo.monads.jar
+echo "Fetching Clojure tools.macro..."
+curl -O -s http://repo1.maven.org/maven2/org/clojure/tools.macro/0.1.1/tools.macro-0.1.1.jar
+echo "Copying tools.macro-0.1.1.jaar to lib/tools.macro.jar..."
+cp tools.macro-0.1.1.jar lib/tools.macro.jar
+echo "Cleaning up Clojure downloaded files..."
 rm -rf clojure-1.4.0/
+rm -f core.incubator-0.1.1.jar
+rm -f algo.monads-0.1.0.jar
 echo "Cleaning up Clojure archive..."
 rm clojure-1.4.0.zip
 
