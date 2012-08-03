@@ -476,7 +476,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   ISeqable
   (-seq [this] this)
 
@@ -585,7 +585,7 @@ reduces them without incurring seq initialization"
   IWithMeta
   (-with-meta [coll new-meta]
     (RSeq. ci i new-meta))
-  
+
   ISeqable
   (-seq [coll] coll)
 
@@ -857,7 +857,7 @@ reduces them without incurring seq initialization"
 (defn hash
   ([o] (hash o true))
   ([o ^boolean check-cache]
-     (if (and ^boolean (goog/isString o) check-cache) 
+     (if (and ^boolean (goog/isString o) check-cache)
        (check-string-hash-cache o)
        (-hash o))))
 
@@ -1525,11 +1525,11 @@ reduces them without incurring seq initialization"
 ;;;;;;;;;;;;;;;; cons ;;;;;;;;;;;;;;;;
 (deftype List [meta first rest count ^:mutable __hash]
   IList
-  
+
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [coll meta] (List. meta first rest count __hash))
 
@@ -1575,7 +1575,7 @@ reduces them without incurring seq initialization"
 
 (deftype EmptyList [meta]
   IList
-  
+
   Object
   (toString [this]
     (pr-str this))
@@ -1642,7 +1642,7 @@ reduces them without incurring seq initialization"
 
 (deftype Cons [meta first rest ^:mutable __hash]
   IList
-  
+
   Object
   (toString [this]
     (pr-str this))
@@ -1817,7 +1817,7 @@ reduces them without incurring seq initialization"
 (deftype ArrayChunk [arr off end]
   ICounted
   (-count [_] (- end off))
-  
+
   IIndexed
   (-nth [coll i]
     (aget arr (+ off i)))
@@ -3394,7 +3394,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [coll meta] (PersistentQueueSeq. meta front rear __hash))
 
@@ -3430,7 +3430,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [coll meta] (PersistentQueue. meta count front rear __hash))
 
@@ -3547,7 +3547,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [coll meta] (ObjMap. meta keys strobj update-count __hash))
 
@@ -3651,7 +3651,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [coll meta] (HashMap. meta count hashobj __hash))
 
@@ -5554,7 +5554,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [coll meta] (PersistentHashSet. meta hash-map __hash))
 
@@ -5890,7 +5890,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-  
+
   IWithMeta
   (-with-meta [rng meta] (Range. meta start end step __hash))
 
@@ -6305,7 +6305,7 @@ reduces them without incurring seq initialization"
             (normalize (.getUTCSeconds d) 2)      "."
             (normalize (.getUTCMilliseconds d) 3) "-"
             "00:00\""))))
-  
+
   LazySeq
   (-pr-seq [coll opts] (pr-sequential pr-seq "(" " " ")" opts coll))
 
@@ -6943,7 +6943,7 @@ reduces them without incurring seq initialization"
   Object
   (toString [this]
     (pr-str this))
-    
+
   IEquiv
   (-equiv [_ other]
     (and (instance? UUID other) (identical? uuid (.-uuid other))))

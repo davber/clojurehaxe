@@ -621,16 +621,16 @@
 
        keyword?
        (emits "(new cljs.core.Keyword(" f ")).call(" (comma-sep (cons "null" args)) ")")
-       
+
        variadic-invoke
        (let [mfa (:max-fixed-arity variadic-invoke)]
         (emits f "(" (comma-sep (take mfa args))
                (when-not (zero? mfa) ",")
                "cljs.core.array_seq([" (comma-sep (drop mfa args)) "], 0))"))
-       
+
        (or fn? js? goog?)
        (emits f "(" (comma-sep args)  ")")
-       
+
        :else
        (if (and ana/*cljs-static-fns* (= (:op f) :var))
          (let [fprop (str ".cljs$lang$arity$" (count args))]
@@ -791,7 +791,7 @@
 
    Returns a map containing {:ns .. :provides .. :requires .. :file ..}.
    If the file was not compiled returns only {:file ...}.
-   
+
    If the file could not be determined to be a ClojureScript file, we
    return {:invalid-target true :file ...}, and that case, the target file
    was deleted, so any recipient (yes, I am talking to you, Mr. Closure.clj and
@@ -799,7 +799,7 @@
 
    The way that is determined right now is to check whether the filename ends in
    .cljs or the source file contains a compiler directive setting target, such as
-      (comment **compiler** :target javascript)
+      (comment **compiler** :target :js)
    It does not have to be on the first line, but that
    is recommended."
 
@@ -811,14 +811,14 @@
            (ana/with-compiler-features {}
               (let [is-cljs (.endsWith (str src) ".cljs")]
                  (ana/set-compiler-feature
-                  :target (if is-cljs 'javascript 'jvm)
+                  :target (if is-cljs :js :jvm)
                   :language (if is-cljs 'clojurescript 'clojure)))
               (ana/warning {} (str "\nDEBUG: starting compilation of " src " with compiler features " (ana/get-compiler-features)))
               (mkdirs dest-file)
               (let [ret (compile-file* src-file dest-file)]
                   (println "\nDEBUG: ended compilation of" src "with compiler features" (ana/get-compiler-features))
                   ;; Ok, now when it is done, check the compiler feature :target
-                  (if (= (ana/get-compiler-feature :target) 'javascript)
+                  (if (= (ana/get-compiler-feature :target) :js)
                     ret
                     (do (io/delete-file dest-file true)
                       (println "\nWARN: removed compiled target" dest-file
@@ -881,7 +881,7 @@
    It accepts both a second positional argument, being the output directory,
    which will default to 'out' and also key parameter :include-clj deciding
    whether to also try to compile .clj files. If including even .clj files,
-   we expect a special (comment **compiler** :target javascript) anywhere in
+   we expect a special (comment **compiler** :target :js) anywhere in
    the file in order to actually compile it."
   ([src-dir & [target-dir & {:keys [include-clj]}]]
      (let [src-dir-file (io/file src-dir)]
@@ -892,7 +892,7 @@
                  output-file ^java.io.File (to-target-file src-dir-file
                   (or target-dir "out") cljs-file)
                  ns-info (compile-file cljs-file output-file)]
-             (recur (rest cljs-files) 
+             (recur (rest cljs-files)
                (if (:invalid-target ns-info)
                  output-files ;; yes, we skip invalid targeted files (i.e., non-ClojureScript files)
                  (conj output-files (assoc ns-info :file-name (.getPath output-file))))))
