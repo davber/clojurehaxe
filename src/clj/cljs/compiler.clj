@@ -754,7 +754,7 @@
         (loop [forms (forms-seq src)
                ns-name nil
                deps nil]
-          (if (seq forms)
+          (if (and (seq forms) (not (ana/get-compiler-feature :stub)))
             (let [env (ana/empty-env)
                   form (first forms)
                   ast (ana/analyze env form)]
@@ -817,8 +817,10 @@
               (mkdirs dest-file)
               (let [ret (compile-file* src-file dest-file)]
                   (println "\nDEBUG: ended compilation of" src "with compiler features" (ana/get-compiler-features))
-                  ;; Ok, now when it is done, check the compiler feature :target
-                  (if (= (ana/get-compiler-feature :target) :js)
+                  ;; Ok, now when it is done, check the compiler
+                  ;; features :target and :stub
+                  (if (or (ana/get-compiler-feature :stub)
+                          (= (ana/get-compiler-feature :target) :js))
                     ret
                     (do (io/delete-file dest-file true)
                       (println "\nWARN: removed compiled target" dest-file

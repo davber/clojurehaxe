@@ -19,7 +19,8 @@
   (:import java.lang.StringBuilder))
 
 (def ^{:private true :const true} COMPILER-FEATURES-DEFAULTS
-  {:target :js :language :clojurescript :ignore-macros-in-source true})
+  {:target :js :language :clojurescript :ignore-macros-in-source true
+   :stub false})
 ;; You can explicitly set the language feature by a compiler directive
 ;;   (comment **compiler** :feature value)
 ;; and the compiler itself can change features according to simple
