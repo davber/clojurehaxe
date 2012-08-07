@@ -10,10 +10,27 @@
 
 (ns cljs.analyzer
   (:refer-clojure :exclude [macroexpand-1])
+  (:use [clojure.core.incubator :only (-?>> -?>)]
+        [clojure.algo.monads :only
+         (domonad monad-transformer with-monad maybe-m identity-m writer-m)])
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [cljs.tagged-literals :as tags])
   (:import java.lang.StringBuilder))
+
+(def ^{:private true :const true} COMPILER-FEATURES-DEFAULTS
+  {:target :js :language :clojurescript :ignore-macros-in-source true
+   :stub false})
+;; You can explicitly set the language feature by a compiler directive
+;;   (comment **compiler** :feature value)
+;; and the compiler itself can change features according to simple
+;; heuristics, such as via the file ending: .cljs implies
+;; { :target :js :language :clojurescript }
+;; and .clj implies { :target jvm :language clojure } so that no
+;; JavaScript will
+;; be output. The proper way to interact with these settings is to use
+;;    with-compiler-features, get-compiler-feature and set-compiler-feature
+(def ^:dynamic *compiler-features* {})
 
 (declare resolve-var)
 (declare resolve-existing-var)
@@ -54,6 +71,44 @@
 (def ^:dynamic *cljs-macros-is-classpath* true)
 (def  -cljs-macros-loaded (atom false))
 
+;; We define a truth-yielding warning variant, which can be used
+;; easily in a maybe monad, since nil breaks out.
+
+(defmacro warning-t
+  "Output a message while yielding true, to be used in and forms and maybe monads.
+   NOTE: it currently has a limit of 500 characters, not to puke all over the screen.
+   TODO: please change the name since the ending '-t' indicates monad transformation,
+   which it not is."
+  [env & args]
+  `(do (warning ~env (let [text# (str ~@args)] (subs text# 0 (min (count text#) 500)))) true))
+
+(defn trace-t
+  "This is a monad transformer injecting trace points in returns and binds.
+   You can supply a :return-tracer and/or :bind-tracer parameter.
+   The return tracer will be called with a non-monadic value before
+   the return. The bind tracer will be called with a monadic value before
+   the bind.
+   The default return tracer uses the warning function for simple output
+   while the bind tracer just outputs the type of the monadic value since those
+   can be pretty big and/or lazy."
+  [m & {:keys [return-tracer, bind-tracer] :or
+        {return-tracer #(warning-t nil "trace-t: about to return '" % "'")
+         bind-tracer (fn [mv] (warning-t nil "trace-t: about to bind value of type " (type mv)))}}]
+  (monad-transformer m :m-plus-from-base
+                     [m-result (with-monad m (fn [v] (return-tracer v) (m-result v)))
+                      m-bind (with-monad m (fn [mv f] (bind-tracer mv) (m-bind mv f)))]))
+
+(defmacro domonad-or
+  "Performs a monad comprehension but switches to the second monad if the run
+   through the first one yielded mzero. This gives us a chance to retrace steps
+   when something went wrong. Like a combination of exception handling and
+   backtracking. We currently use it to inject tracing on the second attempt."
+  [m1 m2 & rest]
+  ;; TODO: we assume mzero is a false value, not good.
+  `(or (domonad ~m1 ~@rest) (domonad ~m2 ~@rest)))
+
+
+
 (defn load-core []
   (when (not @-cljs-macros-loaded)
     (reset! -cljs-macros-loaded true)
@@ -80,6 +135,60 @@
 
 (defn empty-env []
   {:ns (@namespaces *cljs-ns*) :context :statement :locals {}})
+
+(defmacro with-compiler-features
+  "Creates a local binding for features, starting off with the
+   provided map.
+   The settings can then be queried and altered by get-compiler-feature
+   and set-compiler-feature.
+   Any feature not specified in the passed map will take on default value,
+   so the empty map starts off with default settings."
+   [start-features & body]
+   `(binding [*compiler-features* ~start-features] ~@body))
+
+(defn set-compiler-feature
+  "Set one or more compiler features, via keyed parameters.
+   This includes the :target and :language features.
+   NOTE: this works on either a local binding or global."
+  [& {:as features}]
+  (if (thread-bound? #'*compiler-features*)
+    (set! *compiler-features* (merge *compiler-features* features))
+    (alter-var-root #'*compiler-features* merge features)))
+
+(defn clear-compiler-feature
+  "Clear one or more compiler features, i.e., set them to their
+   default value.
+   NOTE: this requires a local binding for *compiler-features* when invoked."
+  [& {:as features}]
+  (set! *compiler-features* (dissoc *compiler-features* (keys features))))
+
+(defn get-compiler-feature
+  "Get the value of a given compiler feature, or nil, if it does not
+   exist.
+   NOTE: this will use the default mapping for the feature in question
+   if an value is not specified in the *compiler-features* map."
+   [feature]
+   (feature (merge COMPILER-FEATURES-DEFAULTS *compiler-features*)))
+
+(defn get-compiler-features
+  "Get all compiler features and their current values (in this thread)"
+  []
+  (merge COMPILER-FEATURES-DEFAULTS *compiler-features*))
+
+(defn check-compiler-directive
+  "Checks whether the given form is a compiler directive, and if so, change
+   compiler features accordingly.
+   Will a flag indicating whether it indeed was a compiler directive.
+   It actually will return nil if not a directive."
+   [form]
+   (when-let [[fst snd & other] (seq form)]
+      (when (= `(~fst ~snd) '(comment **compiler**))
+      (warning-t {} "DEBUG: found a compiler directive in the form: " form)
+        (let [first-rest (first other)
+              minus (and first-rest (= first-rest '-))
+              features (if minus (rest other) other)]
+          (apply (if minus clear-compiler-feature set-compiler-feature) features))
+        true)))
 
 (defmacro ^:private debug-prn
   [& args]
@@ -199,6 +308,8 @@
           (str "WARNING: " (:name ev) " not declared ^:dynamic"))))))
 
 (declare analyze analyze-symbol analyze-seq)
+
+(def ignored '#{defmacro})
 
 (def specials '#{if def fn* do let* loop* letfn* throw try* recur new set! ns deftype* defrecord* . js* & quote})
 
@@ -847,7 +958,7 @@
 
 (defn macroexpand-1 [env form]
   (let [op (first form)]
-    (if (specials op)
+    (if (or (ignored op) (specials op))
       form
       (if-let [mac (and (symbol? op) (get-expander op env))]
         (binding [*ns* (create-ns *cljs-ns*)]
@@ -873,9 +984,10 @@
       (assert (not (nil? op)) "Can't call nil")
       (let [mform (macroexpand-1 env form)]
         (if (identical? form mform)
-          (if (specials op)
-            (parse op env form name)
-            (parse-invoke env form))
+          (cond
+            (specials op) (parse op env form name)
+            (ignored op)   {:op :constant :env env :form nil}
+            :else (parse-invoke env form))
           (analyze env mform name))))))
 
 (declare analyze-wrap-meta)
