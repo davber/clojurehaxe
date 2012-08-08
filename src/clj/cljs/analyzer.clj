@@ -1,4 +1,4 @@
-;   Copyright (c) Rich Hickey. All rights re
+;   Copyright (c) Rich Hickey. All rights reserved.
 ;   The use and distribution terms for this software are covered by the
 ;   Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)
 ;   which can be found in the file epl-v10.html at the root of this distribution.
@@ -208,7 +208,7 @@
           (warning env
             (str "WARNING: Use of undeclared Var " prefix "/" suffix)))))))
 
-(defn resolve-ns-alias [env name & {:keys [only-macros]}]
+(defn resolve-ns-alias [env name]
   (let [sym (symbol name)]
     (get (:requires (:ns env)) sym sym)))
 
@@ -217,125 +217,6 @@
   [env sym]
   (and (get (:defs (@namespaces 'cljs.core)) sym)
        (not (contains? (-> env :ns :excludes) sym))))
-
-(defn old-resolve-var [env sym]
-  (if (= (namespace sym) "js")
-    {:name sym}
-    (let [s (str sym)
-          lb (-> env :locals sym)]
-      (cond
-       lb lb
-
-       (namespace sym)
-       (let [ns (namespace sym)
-             ns (if (= "clojure.core" ns) "cljs.core" ns)]
-         {:name (symbol (str (resolve-ns-alias env ns)) (name sym))})
-
-       (.contains s ".")
-       (let [idx (.indexOf s ".")
-             prefix (symbol (subs s 0 idx))
-             suffix (subs s idx)
-             lb (-> env :locals prefix)]
-         (if lb
-           {:name (symbol (str (:name lb) suffix))}
-           {:name sym}))
-
-       (get-in @namespaces [(-> env :ns :name) :uses sym])
-       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
-         (merge
-          (get-in @namespaces [full-ns :defs sym])
-          {:name (symbol (str full-ns) (name sym))}))
-
-       :else
-       (let [ns (if (core-name? env sym)
-                  'cljs.core
-                  (-> env :ns :name))]
-         {:name (symbol (str ns) (name sym))})))))
-
-
-(defn old-resolve-existing-var [env sym]
-  (if (= (namespace sym) "js")
-    {:name sym :ns 'js}
-    (let [s (str sym)
-          lb (-> env :locals sym)]
-      (cond
-       lb lb
-
-       (namespace sym)
-       (let [ns (namespace sym)
-             ns (if (= "clojure.core" ns) "cljs.core" ns)
-             full-ns (resolve-ns-alias env ns)]
-         (confirm-var-exists env full-ns (symbol (name sym)))
-         (merge (get-in @namespaces [full-ns :defs (symbol (name sym))])
-           {:name (symbol (str full-ns) (str (name sym)))
-            :ns full-ns}))
-
-       (.contains s ".")
-       (let [idx (.indexOf s ".")
-             prefix (symbol (subs s 0 idx))
-             suffix (subs s (inc idx))
-             lb (-> env :locals prefix)]
-         (if lb
-           {:name (symbol (str (:name lb) suffix))}
-           (do
-             (confirm-var-exists env prefix (symbol suffix))
-             (merge (get-in @namespaces [prefix :defs (symbol suffix)])
-              {:name (if (= "" prefix) (symbol suffix) (symbol (str prefix) suffix))
-               :ns prefix}))))
-
-       (get-in @namespaces [(-> env :ns :name) :uses sym])
-       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
-         (merge
-          (get-in @namespaces [full-ns :defs sym])
-          {:name (symbol (str full-ns) (str sym))
-           :ns (-> env :ns :name)}))
-
-       :else
-       (let [full-ns (if (core-name? env sym)
-                       'cljs.core
-                       (-> env :ns :name))]
-         (confirm-var-exists env full-ns sym)
-         (merge (get-in @namespaces [full-ns :defs sym])
-           {:name (symbol (str full-ns) (str sym))
-            :ns full-ns}))))))
-
-(defn resolve-var [env sym & {:keys [confirm-existence only-macros]}]
-  (if confirm-existence (resolve-existing-var env sym)
-      (old-resolve-var env sym)))
-
-(comment
-  (if (= (namespace sym) "js")
-    {:name sym}
-    (let [s (str sym)
-          lb (-> env :locals sym)]
-      (cond
-        lb lb
-
-        (namespace sym)
-        (let [ns (namespace sym)
-              ns (if (= "clojure.core" ns) "cljs.core" ns)]
-          {:name (symbol (str (resolve-ns-alias env ns)) (name sym))})
-
-        (.contains s ".")
-        (let [idx (.indexOf s ".")
-              prefix (symbol (subs s 0 idx))
-              suffix (subs s idx)
-              lb (-> env :locals prefix)]
-          (if lb
-            {:name (symbol (str (:name lb) suffix))}
-            {:name sym}))
-
-        (get-in @namespaces [(-> env :ns :name) :uses sym])
-        (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
-          (merge
-           (get-in @namespaces [full-ns :defs sym])
-           {:name (symbol (str full-ns) (name sym))}))
-
-        :else
-        (let [ns (if (core-name? env sym)
-                   'cljs.core
-                   (-> env :ns :name))]
-          {:name (symbol (str ns) (name sym))})))))
 
 (defn resolve-existing-var [env sym]
   (if (= (namespace sym) "js")
@@ -382,6 +263,40 @@
          (merge (get-in @namespaces [full-ns :defs sym])
            {:name (symbol (str full-ns) (str sym))
             :ns full-ns}))))))
+
+(defn resolve-var [env sym]
+  (if (= (namespace sym) "js")
+    {:name sym}
+    (let [s (str sym)
+          lb (-> env :locals sym)]
+      (cond
+       lb lb
+
+       (namespace sym)
+       (let [ns (namespace sym)
+             ns (if (= "clojure.core" ns) "cljs.core" ns)]
+         {:name (symbol (str (resolve-ns-alias env ns)) (name sym))})
+
+       (.contains s ".")
+       (let [idx (.indexOf s ".")
+             prefix (symbol (subs s 0 idx))
+             suffix (subs s idx)
+             lb (-> env :locals prefix)]
+         (if lb
+           {:name (symbol (str (:name lb) suffix))}
+           {:name sym}))
+
+       (get-in @namespaces [(-> env :ns :name) :uses sym])
+       (let [full-ns (get-in @namespaces [(-> env :ns :name) :uses sym])]
+         (merge
+          (get-in @namespaces [full-ns :defs sym])
+          {:name (symbol (str full-ns) (name sym))}))
+
+       :else
+       (let [ns (if (core-name? env sym)
+                  'cljs.core
+                  (-> env :ns :name))]
+         {:name (symbol (str ns) (name sym))})))))
 
 (defn confirm-bindings [env names]
   (doseq [name names]
@@ -708,8 +623,7 @@
   (let [context (:context env)
         frame (first *recur-frames*)
         exprs (disallowing-recur (vec (map #(analyze (assoc env :context :expr) %) exprs)))]
-    (when-not frame (warning env (str "\nERROR: trying to recur without a proper frame in form " form)))
-    (assert frame (str "Can't recur here, in form: " form))
+    (assert frame "Can't recur here")
     (assert (= (count exprs) (count (:names frame))) "recur argument count mismatch")
     (reset! (:flag frame) true)
     (assoc {:env env :op :recur :form form}
@@ -789,7 +703,6 @@
 
 (defmethod parse 'ns
   [_ env [_ name & args :as form] _]
-  (warning-t env "\nDEBUG: parsing " form)
   (let [docstring (if (string? (first args)) (first args) nil)
         args      (if docstring (next args) args)
         excludes
@@ -845,7 +758,7 @@
                   (apply merge-with merge m
                          (map (partial parse-require-spec (contains? #{:require-macros :use-macros} k))
                               (if (contains? #{:use :use-macros} k)
-                                (do (warning-t env "\nDEBUG: mapping require on libs " libs) (map use->require libs))
+                                (map use->require libs)
                                 libs))))
                 {} (remove (fn [[r]] (= r :refer-clojure)) args))]
     (when (seq @deps)
@@ -854,51 +767,18 @@
     (load-core)
     (doseq [nsym (concat (vals requires-macros) (vals uses-macros))]
       (clojure.core/require nsym))
-    ;; We try to require the namespaces referred to from regular
-    ;; :require and :uses clauses as well, so that we can avoid
-    ;; having the JVM-based Clojure puke unneccesarily; there will be ample
-    ;; opportunities for daddy Clojure to get upset soon by the mischiefs
-    ;; of this youngster, but to kill him on entering the door seems a bit
-    ;; harsh.
-    ;; TODO: we could be intelligent regarding only looking for JVM class files,
-    ;; but for now, we try any file required.
-
-    ;; We gather successful loads, so that we can mark them as 'macroable'
-    ;; for the lookup process to work later in the compiler, since it can no
-    ;; longer rely on the stratified :require-macros for that.
-    (warning-t env "DEBUG: parsing ns before, with uses-macros " uses-macros
-               ", requires-macros " requires-macros ", uses " uses " and requires " requires)
-    (let [
-      uses-macros
-      (or uses-macros (apply merge
-        (for [[key nsym] uses]
-          (try (clojure.core/require nsym)
-            { key nsym }
-            (catch Throwable ex (warning-t env "\nWARN: could not require "
-                                           nsym " due to " ex))))))
-      requires-macros
-      (or requires-macros (apply merge
-      (for [[key nsym] requires]
-      (try (clojure.core/require nsym)
-          { key nsym }
-        (catch Throwable ex)))))
-      ;; NOTE: the files will be tried by ClojureScript even if
-      ;; Clojure did manage to require them
-      ]
-      (warning-t env "DEBUG: parsing ns after, with uses-macros " uses-macros
-                 ", requires-macros " requires-macros ", uses " uses " and requires " requires)
-        (swap! namespaces #(-> %
-                               (assoc-in [name :name] name)
-                               (assoc-in [name :excludes] excludes)
-                               (assoc-in [name :uses] uses)
-                               (assoc-in [name :requires] requires)
-                               (assoc-in [name :uses-macros] uses-macros)
-                               (assoc-in [name :requires-macros]
-                                         (into {} (map (fn [[alias nsym]]
-                                                         [alias (find-ns nsym)])
-                                                       requires-macros)))))
-        {:env env :op :ns :form form :name name :uses uses :requires requires
-         :uses-macros uses-macros :requires-macros requires-macros :excludes excludes})))
+    (swap! namespaces #(-> %
+                           (assoc-in [name :name] name)
+                           (assoc-in [name :excludes] excludes)
+                           (assoc-in [name :uses] uses)
+                           (assoc-in [name :requires] requires)
+                           (assoc-in [name :uses-macros] uses-macros)
+                           (assoc-in [name :requires-macros]
+                                     (into {} (map (fn [[alias nsym]]
+                                                     [alias (find-ns nsym)])
+                                                   requires-macros)))))
+    {:env env :op :ns :form form :name name :uses uses :requires requires
+     :uses-macros uses-macros :requires-macros requires-macros :excludes excludes}))
 
 (defmethod parse 'deftype*
   [_ env [_ tsym fields pmasks :as form] _]
@@ -1056,77 +936,25 @@
       (assoc ret :op :var :info lb)
       (assoc ret :op :var :info (resolve-existing-var env sym)))))
 
-(defn old-get-expander [sym env]
+(defn get-expander [sym env]
   (let [mvar
         (when-not (or (-> env :locals sym)        ;locals hide macros
                       (and (or (-> env :ns :excludes sym)
                                (get-in @namespaces [(-> env :ns :name) :excludes sym]))
                            (not (or (-> env :ns :uses-macros sym)
                                     (get-in @namespaces [(-> env :ns :name) :uses-macros sym])))))
-          (if-let [nstr (namespace sym)] (do
+          (if-let [nstr (namespace sym)]
             (when-let [ns (cond
                            (= "clojure.core" nstr) (find-ns 'cljs.core)
                            (.contains nstr ".") (find-ns (symbol nstr))
                            :else
                            (-> env :ns :requires-macros (get (symbol nstr))))]
-              (.findInternedVar ^clojure.lang.Namespace ns (symbol (name sym)))))
+              (.findInternedVar ^clojure.lang.Namespace ns (symbol (name sym))))
             (if-let [nsym (-> env :ns :uses-macros sym)]
               (.findInternedVar ^clojure.lang.Namespace (find-ns nsym) sym)
               (.findInternedVar ^clojure.lang.Namespace (find-ns 'cljs.core) sym))))]
     (when (and mvar (.isMacro ^clojure.lang.Var mvar))
       @mvar)))
-
-(defn get-expander
-  "Finding a macro definition, using the general resolve-var function.
-   TODO: please use the same order between the env and sym arguments everywhere!"
-  [sym env]
-  (let [mvar
-        (when-not (or (-> env :locals sym)        ;locals hide macros
-                      (and (or (-> env :ns :excludes sym)
-                               (get-in @namespaces [(-> env :ns :name) :excludes sym]))
-                           (not (or (-> env :ns :uses-macros sym)
-                                    (-> env :ns :uses sym)
-                                    (get-in @namespaces [(-> env :ns :name) :uses-macros sym])))))
-          (if-let [nstr (namespace sym)] (do
-                                           (when-let [ns (cond
-                                                           (= "clojure.core" nstr) (find-ns 'cljs.core)
-                                                           (.contains nstr ".") (find-ns (symbol nstr))
-                                                           :else
-                                                           (or (-> env :ns :requires-macros (get (symbol nstr)))))]
-                                             (.findInternedVar ^clojure.lang.Namespace ns (symbol (name sym)))))
-                  (if-let [nsym (-> env :ns :uses-macros sym)]
-                    (.findInternedVar ^clojure.lang.Namespace (find-ns nsym) sym)
-                    (.findInternedVar ^clojure.lang.Namespace (find-ns 'cljs.core) sym))))]
-    (when (and mvar (.isMacro ^clojure.lang.Var mvar))
-      @mvar)))
-
-
-
-
-(comment
-  (#(let [their (old-get-expander sym env)]
-      (when (not= % their) (let [sym-def (resolve-var env sym :uses-macros true :confirm-existence true)
-                                 core-ns (find-ns 'cljs.core)
-                                 ns-name (:ns sym-def)
-                                 ns (when ns-name (find-ns ns-name))]
-                             (warning-t env "\nDEBUG: [get-expander] we resolved macro symbol " sym " to "
-                                        % " while they resolved to " their " and we used symbol definition " sym-def " and found its ns = "
-                                        (not (not ns)))
-                             (warning-t env "\nDEBUG: Just for fun, we check the var associated with the passed symbol (" sym ") in the cljs.core ns: "
-                                        (.findInternedVar ^clojure.lang.Namespace core-ns sym))
-                             (warning-t env "\nDEBUG: where the value is " (when (.findInternedVar ^clojure.lang.Namespace core-ns sym)
-                                                                             @(.findInternedVar ^clojure.lang.Namespace core-ns sym)))
-                             (warning-t env "\nDEBUG: And the var associated with " (symbol (name (:name sym-def))) " is: "
-                                        (when ns (.findInternedVar ^clojure.lang.Namespace ns (symbol (name (:name sym-def))))))))
-      %)
-   (domonad maybe-m
-            [sym-def (resolve-var env sym :uses-macros true :confirm-existence true)
-             ns-name (or (:ns sym-def) 'cljs.core)
-             ns-obj (find-ns ns-name)
-             lookup-sym (symbol (name (:name sym-def)))
-             ^clojure.lang.Var mvar (.findInternedVar  ^clojure.lang.Namespace ns-obj lookup-sym)
-             ok (.isMacro mvar)]
-            @mvar)))
 
 (defn macroexpand-1 [env form]
   (let [op (first form)]
@@ -1144,7 +972,8 @@
              (= (last opname) \.) (with-meta
                                     (list* 'new (symbol (subs opname 0 (dec (count opname)))) (next form))
                                     (meta form))
-              :else form)))))))
+             :else form))
+          form)))))
 
 (defn analyze-seq
   [env form name]
