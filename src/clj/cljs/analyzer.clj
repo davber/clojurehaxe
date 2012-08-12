@@ -20,7 +20,7 @@
 
 (def ^{:private true :const true} COMPILER-FEATURES-DEFAULTS
   {:target :js :language :clojurescript :ignore-macros-in-source true
-   :stub false})
+   :stub false :macros []})
 ;; You can explicitly set the language feature by a compiler directive
 ;;   (comment **compiler** :feature value)
 ;; and the compiler itself can change features according to simple
@@ -29,7 +29,11 @@
 ;; and .clj implies { :target jvm :language clojure } so that no
 ;; JavaScript will
 ;; be output. The proper way to interact with these settings is to use
-;;    with-compiler-features, get-compiler-feature and set-compiler-feature
+;; with-compiler-features, get-compiler-feature and
+;; set-compiler-feature.
+;; A special feature is that of :macros which indicates which
+;; ones of subsequently required namespaces are pure macro modules, and
+;; supersedes the awkward :require-macros use
 (def ^:dynamic *compiler-features* {})
 
 (declare resolve-var)
@@ -749,18 +753,33 @@
                                (error-msg spec "Only [lib.ns :only [names]] specs supported in :use / :use-macros"))
                        [lib :refer referred])
         {uses :use requires :require uses-macros :use-macros requires-macros :require-macros :as params}
-        (reduce (fn [m [k & libs]]
-                  (assert (#{:use :use-macros :require :require-macros} k)
-                          "Only :refer-clojure, :require, :require-macros, :use and :use-macros libspecs supported")
-                  (assert (@valid-forms k)
-                          (str "Only one " k " form is allowed per namespace definition"))
-                  (swap! valid-forms disj k)
-                  (apply merge-with merge m
-                         (map (partial parse-require-spec (contains? #{:require-macros :use-macros} k))
-                              (if (contains? #{:use :use-macros} k)
-                                (map use->require libs)
-                                libs))))
-                {} (remove (fn [[r]] (= r :refer-clojure)) args))]
+        ;; A previous :macros feature may actually put some ordinary
+        ;; namespaces in the corresponding macro vectors
+        ((fn [specs]
+           (let [macro-aliases (get-compiler-feature :macros)
+                 impl-uses (select-keys (:use specs) macro-aliases)
+                 impl-requires (select-keys (:require specs)  macro-aliases)
+                 uses (dissoc (:use specs) macro-aliases)
+                 requires (dissoc (:require specs) macro-aliases)
+                 new-specs
+                 {:use uses :require requires
+                  :use-macros (merge impl-uses (:use-macros specs))
+                  :require-macros (merge impl-requires (:require-macros specs))}]
+             (warning-t env "DEBUG: converted specs, from " specs " to " new-specs
+                        " with impl-uses " impl-uses " and impl-requires " impl-requires)
+             new-specs))
+         (reduce (fn [m [k & libs]]
+                   (assert (#{:use :use-macros :require :require-macros} k)
+                           "Only :refer-clojure, :require, :require-macros, :use and :use-macros libspecs supported")
+                   (assert (@valid-forms k)
+                           (str "Only one " k " form is allowed per namespace definition"))
+                   (swap! valid-forms disj k)
+                   (apply merge-with merge m
+                          (map (partial parse-require-spec (contains? #{:require-macros :use-macros} k))
+                               (if (contains? #{:use :use-macros} k)
+                                 (map use->require libs)
+                                 libs))))
+                 {} (remove (fn [[r]] (= r :refer-clojure)) args)))]
     (when (seq @deps)
       (analyze-deps @deps))
     (set! *cljs-ns* name)
