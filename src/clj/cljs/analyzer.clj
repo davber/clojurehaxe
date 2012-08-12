@@ -34,7 +34,7 @@
 ;; A special feature is that of :macros which indicates which
 ;; ones of subsequently required namespaces are pure macro modules, and
 ;; supersedes the awkward :require-macros use
-(def ^:dynamic *compiler-features* {})
+(defonce ^:dynamic *compiler-features* {})
 
 (declare resolve-var)
 (declare resolve-existing-var)
