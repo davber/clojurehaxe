@@ -653,8 +653,12 @@
   (emitln "goog.provide('" (munge name) "');")
   (when-not (= name 'cljs.core)
     (emitln "goog.require('cljs.core');"))
-  (doseq [lib (into (vals requires) (distinct (vals uses)))]
-    (emitln "goog.require('" (munge lib) "');")))
+  (let [macro-mods (ana/get-compiler-feature :macros)
+        requires (apply dissoc requires macro-mods)
+        uses (apply dissoc uses macro-mods)]
+    (doseq [lib (into (vals requires)
+                      (distinct (vals uses)))]
+      (emitln "goog.require('" (munge lib) "');"))))
 
 (defmethod emit :deftype*
   [{:keys [t fields pmasks]}]
