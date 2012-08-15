@@ -10,8 +10,7 @@
 
 (ns cljs.analyzer
   (:refer-clojure :exclude [macroexpand-1])
-  (:use [clojure.core.incubator :only (-?>> -?>)]
-        [clojure.algo.monads :only
+  (:use [clojure.algo.monads :only
          (domonad monad-transformer with-monad maybe-m identity-m writer-m)])
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
@@ -759,14 +758,12 @@
            (let [macro-aliases (get-compiler-feature :macros)
                  impl-uses (select-keys (:use specs) macro-aliases)
                  impl-requires (select-keys (:require specs)  macro-aliases)
-                 uses (dissoc (:use specs) macro-aliases)
-                 requires (dissoc (:require specs) macro-aliases)
+                 real-uses (apply dissoc (:use specs) macro-aliases)
+                 real-requires (apply dissoc (:require specs) macro-aliases)
                  new-specs
-                 {:use uses :require requires
+                 {:use real-uses :require real-requires
                   :use-macros (merge impl-uses (:use-macros specs))
                   :require-macros (merge impl-requires (:require-macros specs))}]
-             (warning-t env "DEBUG: converted specs, from " specs " to " new-specs
-                        " with impl-uses " impl-uses " and impl-requires " impl-requires)
              new-specs))
          (reduce (fn [m [k & libs]]
                    (assert (#{:use :use-macros :require :require-macros} k)
