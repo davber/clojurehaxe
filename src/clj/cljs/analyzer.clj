@@ -781,8 +781,16 @@
       (analyze-deps @deps))
     (set! *cljs-ns* name)
     (load-core)
-    (doseq [nsym (concat (vals requires-macros) (vals uses-macros))]
-      (clojure.core/require nsym))
+    ;; We always use the specific macro requirements, but optionally
+    ;; we load "regular" code as well, including the requiring source
+    (let [mods (concat (vals requires-macros) (vals uses-macros))
+          mods (if (get-compiler-feature :ignore-macros-in-source) mods
+                   (cons name (concat mods (vals requires) (vals uses))))]
+      (doseq [nsym mods]
+        (try
+          (clojure.core/require nsym)
+          (catch Exception ex
+            (warning-t env "WARN: could not require " nsym " due to " ex)))))
     (swap! namespaces #(-> %
                            (assoc-in [name :name] name)
                            (assoc-in [name :excludes] excludes)
