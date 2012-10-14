@@ -51,6 +51,8 @@
 (defonce namespaces (atom '{cljs.core {:name cljs.core}
                             cljs.user {:name cljs.user}}))
 
+(defonce ns-first-segments (atom '#{"cljs" "clojure"}))
+
 (defn reset-namespaces! []
   (reset! namespaces
     '{cljs.core {:name cljs.core}
@@ -68,6 +70,8 @@
 (def ^:dynamic *cljs-warn-on-dynamic* true)
 (def ^:dynamic *cljs-warn-on-fn-var* true)
 (def ^:dynamic *cljs-warn-fn-arity* true)
+(def ^:dynamic *cljs-warn-fn-deprecated* true)
+(def ^:dynamic *cljs-warn-protocol-deprecated* true)
 (def ^:dynamic *unchecked-if* (atom false))
 (def ^:dynamic *cljs-static-fns* false)
 (def ^:dynamic *cljs-macros-path* "/cljs/core")
@@ -258,6 +262,9 @@
           {:name (symbol (str full-ns) (str sym))
            :ns (-> env :ns :name)}))
 
+       (get-in @namespaces [(-> env :ns :name) :imports sym])
+       (recur env (get-in @namespaces [(-> env :ns :name) :imports sym]))
+
        :else
        (let [full-ns (if (core-name? env sym)
                        'cljs.core
@@ -294,6 +301,9 @@
          (merge
           (get-in @namespaces [full-ns :defs sym])
           {:name (symbol (str full-ns) (name sym))}))
+
+       (get-in @namespaces [(-> env :ns :name) :imports sym])
+       (recur env (get-in @namespaces [(-> env :ns :name) :imports sym]))
 
        :else
        (let [ns (if (core-name? env sym)
@@ -436,12 +446,9 @@
           (warning env
             (str "WARNING: " (symbol (str ns-name) (str sym))
                  " no longer fn, references are stale"))))
-      (swap! namespaces update-in [ns-name :defs sym]
-             (fn [m]
-               (let [m (assoc (or m {}) :name name)]
-                 (merge m
-                   (when tag {:tag tag})
-                   (when sym-meta sym-meta)
+      (swap! namespaces assoc-in [ns-name :defs sym]
+                 (merge {:name name}
+                   sym-meta
                    (when dynamic {:dynamic true})
                    (when-let [line (:line env)]
                      {:file *cljs-file* :line line})
@@ -459,9 +466,7 @@
                       :protocol-inline (:protocol-inline init-expr)
                       :variadic (:variadic init-expr)
                       :max-fixed-arity (:max-fixed-arity init-expr)
-                      :method-params (map (fn [m]
-                                            (:params m))
-                                          (:methods init-expr))})))))
+                      :method-params (map :params (:methods init-expr))})))
       (merge {:env env :op :def :form form
               :name name :doc doc :init init-expr}
              (when tag {:tag tag})
@@ -473,16 +478,21 @@
   (letfn [(uniqify [[p & r]]
             (when p
               (cons (if (some #{p} r) (gensym (str p)) p)
-                    (uniqify r))))]
+                    (uniqify r))))
+          (prevent-ns-shadow [p]
+            (if (@ns-first-segments (str p))
+              (symbol (str p "$"))
+              p))]
    (let [params (first meth)
          variadic (boolean (some '#{&} params))
          params (vec (uniqify (remove '#{&} params)))
          fixed-arity (count (if variadic (butlast params) params))
          body (next meth)
          locals (reduce (fn [m name]
-                          (assoc m name {:name name
+                          (assoc m name {:name (prevent-ns-shadow name)
                                          :tag (-> name meta :tag)}))
                         locals params)
+         params (vec (map prevent-ns-shadow params))
          recur-frame {:names params :flag (atom nil)}
          block (binding [*recur-frames* (cons recur-frame *recur-frames*)]
                  (analyze-block (assoc env :context :return :locals locals) body))]
@@ -596,7 +606,14 @@
                          :tag (or (-> name meta :tag)
                                   (-> init-expr :tag)
                                   (-> init-expr :info :tag))
-                         :local true}]
+                         :local true}
+                     be (if (= (:op init-expr) :fn)
+                          (merge be
+                            {:fn-var true
+                             :variadic (:variadic init-expr)
+                             :max-fixed-arity (:max-fixed-arity init-expr)
+                             :method-params (map :params (:methods init-expr))})
+                          be)]
                  (recur (conj bes be)
                         (assoc-in env [:locals name] be)
                         (next bindings))))
@@ -640,6 +657,7 @@
 
 (defmethod parse 'new
   [_ env [_ ctor & args :as form] _]
+  (assert (symbol? ctor) "First arg to new must be a symbol")
   (disallowing-recur
    (let [enve (assoc env :context :expr)
          ctorexpr (analyze enve ctor)
@@ -712,13 +730,13 @@
         (reduce (fn [s [k exclude xs]]
                   (if (= k :refer-clojure)
                     (do
-                      (assert (= exclude :exclude) "Only [:refer-clojure :exclude [names]] form supported")
+                      (assert (= exclude :exclude) "Only [:refer-clojure :exclude (names)] form supported")
                       (assert (not (seq s)) "Only one :refer-clojure form is allowed per namespace definition")
                       (into s xs))
                     s))
                 #{} args)
         deps (atom #{})
-        valid-forms (atom #{:use :use-macros :require :require-macros})
+        valid-forms (atom #{:use :use-macros :require :require-macros :import})
         error-msg (fn [spec msg] (str msg "; offending spec: " (pr-str spec)))
         parse-require-spec (fn parse-require-spec [macros? spec]
                              (assert (or (symbol? spec) (vector? spec))
@@ -727,7 +745,7 @@
                                (assert (symbol? (first spec))
                                        (error-msg spec "Library name must be specified as a symbol in :require / :require-macros"))
                                (assert (odd? (count spec))
-                                       (error-msg spec "Only :as alias and :refer [names] options supported in :require"))
+                                       (error-msg spec "Only :as alias and :refer (names) options supported in :require"))
                                (assert (every? #{:as :refer} (map first (partition 2 (next spec))))
                                        (error-msg spec "Only :as and :refer options supported in :require / :require-macros"))
                                (assert (let [fs (frequencies (next spec))]
@@ -741,17 +759,29 @@
                                      [rk uk] (if macros? [:require-macros :use-macros] [:require :use])]
                                  (assert (or (symbol? alias) (nil? alias))
                                          (error-msg spec ":as must be followed by a symbol in :require / :require-macros"))
-                                 (assert (or (and (vector? referred) (every? symbol? referred))
+                                 (assert (or (and (sequential? referred) (every? symbol? referred))
                                              (nil? referred))
-                                         (error-msg spec ":refer must be followed by a vector of symbols in :require / :require-macros"))
+                                         (error-msg spec ":refer must be followed by a sequence of symbols in :require / :require-macros"))
                                  (swap! deps conj lib)
                                  (merge (when alias {rk {alias lib}})
                                         (when referred {uk (apply hash-map (interleave referred (repeat lib)))})))))
         use->require (fn use->require [[lib kw referred :as spec]]
-                       (assert (and (symbol? lib) (= :only kw) (vector? referred) (every? symbol? referred))
-                               (error-msg spec "Only [lib.ns :only [names]] specs supported in :use / :use-macros"))
+                       (assert (and (symbol? lib) (= :only kw) (sequential? referred) (every? symbol? referred))
+                               (error-msg spec "Only [lib.ns :only (names)] specs supported in :use / :use-macros"))
                        [lib :refer referred])
-        {uses :use requires :require uses-macros :use-macros requires-macros :require-macros :as params}
+        parse-import-spec (fn parse-import-spec [spec]
+                            (assert (and (symbol? spec) (nil? (namespace spec)))
+                                    (error-msg spec "Only lib.Ctor specs supported in :import"))
+                            (swap! deps conj spec)
+                            (let [ctor-sym (symbol (last (string/split (str spec) #"\.")))]
+                              {:import  {ctor-sym spec}
+                               :require {ctor-sym spec}}))
+        spec-parsers {:require        (partial parse-require-spec false)
+                      :require-macros (partial parse-require-spec true)
+                      :use            (comp (partial parse-require-spec false) use->require)
+                      :use-macros     (comp (partial parse-require-spec true) use->require)
+                      :import         parse-import-spec}
+        {uses :use requires :require uses-macros :use-macros requires-macros :require-macros imports :import :as params}
         ;; A previous :macros feature may actually put some ordinary
         ;; namespaces in the corresponding macro vectors
         ((fn [specs]
@@ -766,16 +796,12 @@
                   :require-macros (merge impl-requires (:require-macros specs))}]
              new-specs))
          (reduce (fn [m [k & libs]]
-                   (assert (#{:use :use-macros :require :require-macros} k)
+                   (assert (#{:use :use-macros :require :require-macros :import} k)
                            "Only :refer-clojure, :require, :require-macros, :use and :use-macros libspecs supported")
                    (assert (@valid-forms k)
                            (str "Only one " k " form is allowed per namespace definition"))
                    (swap! valid-forms disj k)
-                   (apply merge-with merge m
-                          (map (partial parse-require-spec (contains? #{:require-macros :use-macros} k))
-                               (if (contains? #{:use :use-macros} k)
-                                 (map use->require libs)
-                                 libs))))
+                   (apply merge-with merge m (map (spec-parsers k) libs)))
                  {} (remove (fn [[r]] (= r :refer-clojure)) args)))]
     (when (seq @deps)
       (analyze-deps @deps))
@@ -791,6 +817,7 @@
           (clojure.core/require nsym)
           (catch Exception ex
             (warning-t env "WARN: could not require " nsym " due to " ex)))))
+    (swap! ns-first-segments conj (first (string/split (str name) #"\.")))
     (swap! namespaces #(-> %
                            (assoc-in [name :name] name)
                            (assoc-in [name :excludes] excludes)
@@ -800,8 +827,9 @@
                            (assoc-in [name :requires-macros]
                                      (into {} (map (fn [[alias nsym]]
                                                      [alias (find-ns nsym)])
-                                                   requires-macros)))))
-    {:env env :op :ns :form form :name name :uses uses :requires requires
+                                                   requires-macros)))
+                           (assoc-in [name :imports] imports)))
+    {:env env :op :ns :form form :name name :uses uses :requires requires :imports imports
      :uses-macros uses-macros :requires-macros requires-macros :excludes excludes}))
 
 (defmethod parse 'deftype*
@@ -948,6 +976,10 @@
                         (and variadic (< argc max-fixed-arity))))
            (warning env
              (str "WARNING: Wrong number of args (" argc ") passed to " name)))))
+     (if (and *cljs-warn-fn-deprecated* (-> fexpr :info :deprecated)
+              (not (-> form meta :deprecation-nowarn)))
+       (warning env
+         (str "WARNING: " (-> fexpr :info :name) " is deprecated.")))
      {:env env :op :invoke :form form :f fexpr :args argexprs
       :tag (or (-> fexpr :info :tag) (-> form meta :tag)) :children (into [fexpr] argexprs)})))
 

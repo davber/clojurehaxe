@@ -33,6 +33,7 @@
     "volatile" "while" "with" "yield" "methods"})
 
 (def ^:dynamic *position* nil)
+(def ^:dynamic *emitted-provides* nil)
 (def cljs-reserved-file-names #{"deps.cljs"})
 
 (defn munge
@@ -557,7 +558,7 @@
     (when (= :expr context) (emits "})()"))))
 
 (defn protocol-prefix [psym]
-  (str (-> (str psym) (.replace \. \$) (.replace \/ \$)) "$"))
+  (symbol (str (-> (str psym) (.replace \. \$) (.replace \/ \$)) "$")))
 
 (defmethod emit :invoke
   [{:keys [f args env] :as expr}]
@@ -615,7 +616,7 @@
        (emits "!(" (first args) ")")
 
        proto?
-       (let [pimpl (str (protocol-prefix protocol)
+       (let [pimpl (str (munge (protocol-prefix protocol))
                         (munge (name (:name info))) "$arity$" (count args))]
          (emits (first args) "." pimpl "(" (comma-sep args) ")"))
 
@@ -663,6 +664,10 @@
 (defmethod emit :deftype*
   [{:keys [t fields pmasks]}]
   (let [fields (map munge fields)]
+    (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* t))
+      (swap! *emitted-provides* conj t)
+      (emitln "")
+      (emitln "goog.provide('" (munge t) "');"))
     (emitln "")
     (emitln "/**")
     (emitln "* @constructor")
@@ -677,6 +682,10 @@
 (defmethod emit :defrecord*
   [{:keys [t fields pmasks]}]
   (let [fields (concat (map munge fields) '[__meta __extmap])]
+    (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* t))
+      (swap! *emitted-provides* conj t)
+      (emitln "")
+      (emitln "goog.provide('" (munge t) "');"))
     (emitln "")
     (emitln "/**")
     (emitln "* @constructor")
@@ -754,7 +763,8 @@
                 ana/*cljs-ns* 'cljs.user
                 ana/*cljs-file* (.getPath ^java.io.File src)
                 *data-readers* tags/*cljs-data-readers*
-                *position* (atom [0 0])]
+                *position* (atom [0 0])
+                *emitted-provides* (atom #{})]
         (loop [forms (forms-seq src)
                ns-name nil
                deps nil]

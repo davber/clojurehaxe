@@ -69,8 +69,12 @@
                                  (str x path)))]
         (server/send-and-close conn 200 (slurp (first local-path))
                         (condp #(.endsWith %2 %1) path
-                          ".js" "text/javascript"
                           ".html" "text/html"
+                          ".css" "text/css"
+                          ".html" "text/html"
+                          ".jpg" "image/jpeg"
+                          ".js" "text/javascript"
+                          ".png" "image/png"
                           "text/plain"))
         (server/send-404 conn path)))
     (server/send-404 conn path)))
@@ -156,8 +160,8 @@
       (browser-eval (slurp url))
       (swap! loaded-libs (partial apply conj) missing))))
 
-(extend-protocol repl/IJavaScriptEnv
-  clojure.lang.IPersistentMap
+(defrecord BrowserEnv []
+  repl/IJavaScriptEnv
   (-setup [this]
     (do (require 'cljs.repl.reflect)
         (repl/analyze-source (:src this))
@@ -222,7 +226,8 @@
                   support reflection. Defaults to \"src/\".
   "
   [& {:as opts}]
-  (let [opts (merge {:port          9000
+  (let [opts (merge (BrowserEnv.)
+                    {:port          9000
                      :optimizations :simple
                      :working-dir   ".repl"
                      :serve-static  true

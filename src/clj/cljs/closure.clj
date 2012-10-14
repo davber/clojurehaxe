@@ -544,7 +544,7 @@
   [opts requires]
   (let [index (js-dependency-index opts)]
     (loop [requires requires
-           visited requires
+           visited (set requires)
            deps #{}]
       (if (seq requires)
         (let [node (get index (first requires))
@@ -679,6 +679,9 @@
   (let [closure-compiler (make-closure-compiler)
         externs (load-externs opts)
         compiler-options (make-options opts)
+        sources (if (= :whitespace (:optimizations opts))
+                  (cons "var CLOSURE_NO_DEPS = true;" sources)
+                  sources)
         inputs (map #(js-source-file (javascript-name %) %) sources)
         result ^Result (.compile closure-compiler externs inputs compiler-options)]
     (if (.success result)
@@ -864,7 +867,7 @@
 
 (defn add-header [{:keys [hashbang target]} js]
   (if (= :nodejs target)
-    (str "#!" (or hashbang "/usr/bin/nodejs") "\n" js)
+    (str "#!" (or hashbang "/usr/bin/env node") "\n" js)
     js))
 
 (defn build
@@ -886,14 +889,11 @@
               ana/*cljs-warn-on-undeclared*
               (true? (opts :warnings))]
       (let [compiled (-compile source all-opts)
-            compiled (concat
-                      (if (coll? compiled) compiled [compiled])
-                      (when (= :nodejs (:target all-opts))
-                        [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
-            js-sources (if (coll? compiled)
-                         (binding []
-                           (apply add-dependencies all-opts compiled))
-                         (add-dependencies all-opts compiled))
+            js-sources (concat
+                         (apply add-dependencies all-opts
+                            (if (coll? compiled) compiled [compiled]))
+                         (when (= :nodejs (:target all-opts))
+                           [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
             optim (:optimizations all-opts)]
         (if (and optim (not= optim :none))
           (->> js-sources

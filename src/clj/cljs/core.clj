@@ -154,10 +154,10 @@
                '[IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext
                  ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref
                  IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash
-                 ISeqable ISequential IList IRecord IReversible ISorted IPrintable
-                 IPending IWatchable IEditableCollection ITransientCollection
+                 ISeqable ISequential IList IRecord IReversible ISorted IPrintable IWriter
+                 IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection
                  ITransientAssociative ITransientMap ITransientVector ITransientSet
-                 IMultiFn])
+                 IMultiFn IChunkedSeq IChunkedNext IComparable])
           (iterate (fn [[p b]]
                      (if (core/== 2147483648 b)
                        [(core/inc p) 1]
@@ -447,9 +447,15 @@
         warn-if-not-protocol #(when-not (= 'Object %)
                                 (if cljs.analyzer/*cljs-warn-on-undeclared*
                                   (if-let [var (cljs.analyzer/resolve-existing-var (dissoc &env :locals) %)]
-                                    (when-not (:protocol-symbol var)
-                                      (cljs.analyzer/warning &env
-                                        (core/str "WARNING: Symbol " % " is not a protocol")))
+                                    (do
+                                     (when-not (:protocol-symbol var)
+                                       (cljs.analyzer/warning &env
+                                         (core/str "WARNING: Symbol " % " is not a protocol")))
+                                     (when (and cljs.analyzer/*cljs-warn-protocol-deprecated*
+                                                (-> var :deprecated)
+                                                (not (-> % meta :deprecation-nowarn)))
+                                       (cljs.analyzer/warning &env
+                                         (core/str "WARNING: Protocol " % " is deprecated"))))
                                     (cljs.analyzer/warning &env
                                       (core/str "WARNING: Can't resolve protocol symbol " %)))))
         skip-flag (set (-> tsym meta :skip-protocol-flag))]
@@ -574,12 +580,14 @@
          (deftype* ~t ~fields ~pmasks)
          (set! (.-cljs$lang$type ~t) true)
          (set! (.-cljs$lang$ctorPrSeq ~t) (fn [this#] (list ~(core/str r))))
+         (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer#] (-write writer# ~(core/str r))))
          (extend-type ~t ~@(dt->et impls fields true))
          ~t)
       `(do
          (deftype* ~t ~fields ~pmasks)
          (set! (.-cljs$lang$type ~t) true)
          (set! (.-cljs$lang$ctorPrSeq ~t) (fn [this#] (list ~(core/str r))))
+         (set! (.-cljs$lang$ctorPrWriter ~t) (fn [this# writer#] (-write writer# ~(core/str r))))
          ~t))))
 
 (defn- emit-defrecord
@@ -633,19 +641,28 @@
                   'IMap
                   `(~'-dissoc [this# k#] (if (contains? #{~@(map keyword base-fields)} k#)
                                            (dissoc (with-meta (into {} this#) ~'__meta) k#)
-                                           (new ~tagname ~@(remove #{'__extmap '__hash} fields) 
+                                           (new ~tagname ~@(remove #{'__extmap '__hash} fields)
                                                 (not-empty (dissoc ~'__extmap k#))
                                                 nil)))
                   'ISeqable
-                  `(~'-seq [this#] (seq (concat [~@(map #(list `vector (keyword %) %) base-fields)] 
+                  `(~'-seq [this#] (seq (concat [~@(map #(list `vector (keyword %) %) base-fields)]
                                                 ~'__extmap)))
+
                   'IPrintable
                   `(~'-pr-seq [this# opts#]
                               (let [pr-pair# (fn [keyval#] (pr-sequential pr-seq "" " " "" opts# keyval#))]
                                 (pr-sequential
                                  pr-pair# (core/str "#" ~(core/str (namespace rname) "." (name rname)) "{") ", " "}" opts#
-                                 (concat [~@(map #(list `vector (keyword %) %) base-fields)] 
+                                 (concat [~@(map #(list `vector (keyword %) %) base-fields)]
                                          ~'__extmap))))
+
+                  'IPrintWithWriter
+                  `(~'-pr-writer [this# writer# opts#]
+                                 (let [pr-pair# (fn [keyval#] (pr-sequential-writer writer# pr-writer "" " " "" opts# keyval#))]
+                                   (pr-sequential-writer
+                                    writer# pr-pair# (core/str "#" ~(name rname) "{") ", " "}" opts#
+                                    (concat [~@(map #(list `vector (keyword %) %) base-fields)]
+                                            ~'__extmap))))
                   ])
           [fpps pmasks] (prepare-protocol-masks env tagname impls)
           protocols (collect-protocols impls env)
@@ -679,6 +696,7 @@
        ~(emit-defrecord &env rsym r fields impls)
        (set! (.-cljs$lang$type ~r) true)
        (set! (.-cljs$lang$ctorPrSeq ~r) (fn [this#] (list ~(core/str r))))
+       (set! (.-cljs$lang$ctorPrWriter ~r) (fn [this# writer#] (-write writer# ~(core/str r))))
        ~(build-positional-factory rsym r fields)
        ~(build-map-factory rsym r fields)
        ~r)))
@@ -826,9 +844,15 @@
                                                          cljs.analyzer/*cljs-file*)))))
                            (assoc m test expr)))
         pairs (reduce (fn [m [test expr]]
-                        (if (seq? test)
-                          (reduce #(assoc-test %1 %2 expr) m test)
-                          (assoc-test m test expr)))
+                        (cond
+                         (seq? test) (reduce (fn [m test]
+                                               (let [test (if (symbol? test)
+                                                            (list 'quote test)
+                                                            test)]
+                                                 (assoc-test m test expr)))
+                                             m test)
+                         (symbol? test) (assoc-test m (list 'quote test) expr)
+                         :else (assoc-test m test expr)))
                       {} (partition 2 clauses))
         esym (gensym)]
    `(let [~esym ~e]
@@ -942,9 +966,9 @@
                  [true `(do ~@body)]
                  (let [k (first exprs)
                        v (second exprs)
-                       
+
                        seqsym (when-not (keyword? k) (gensym))
-                       recform (if (keyword? k) recform `(recur (first ~seqsym) ~seqsym))
+                       recform (if (keyword? k) recform `(recur (next ~seqsym)))
                        steppair (step recform (nnext exprs))
                        needrec (steppair 0)
                        subform (steppair 1)]
@@ -958,12 +982,11 @@
                                              ~subform
                                              ~@(when needrec [recform]))
                                            ~recform)]
-                     :else [true `(let [~seqsym (seq ~v)]
+                     :else [true `(loop [~seqsym (seq ~v)]
                                     (when ~seqsym
-                                      (loop [~k (first ~seqsym) ~seqsym ~seqsym]
-                                       ~subform
-                                       (when-let [~seqsym (next ~seqsym)]
-                                        ~@(when needrec [recform])))))]))))]
+                                      (let [~k (first ~seqsym)]
+                                        ~subform
+                                        ~@(when needrec [recform]))))]))))]
     (nth (step nil (seq seq-exprs)) 1)))
 
 (defmacro array [& rest]
@@ -992,8 +1015,8 @@
 
 (defmacro amap
   "Maps an expression across an array a, using an index named idx, and
-  return value named ret, initialized to a clone of a, then setting 
-  each element of ret to the evaluation of expr, returning the new 
+  return value named ret, initialized to a clone of a, then setting
+  each element of ret to the evaluation of expr, returning the new
   array ret."
   [a idx ret expr]
   `(let [a# ~a
@@ -1007,7 +1030,7 @@
 
 (defmacro areduce
   "Reduces an expression across an array a, using an index named idx,
-  and return value named ret, initialized to init, setting ret to the 
+  and return value named ret, initialized to init, setting ret to the
   evaluation of expr at each step, returning ret."
   [a idx ret init expr]
   `(let [a# ~a]
