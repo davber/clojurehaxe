@@ -9,7 +9,7 @@
 (ns cljs.core
   (:require [goog.string :as gstring]
             [goog.string.StringBuffer :as gstringbuf]
-            [goog.string.format]
+            ;; [goog.string.format]
             [goog.object :as gobject]
             [goog.array :as garray]))
 
