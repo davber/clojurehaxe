@@ -624,7 +624,7 @@ reduces them without incurring seq initialization"
   ([prim]
      (prim-seq prim 0))
   ([prim i]
-     (when-not (zero? (alength prim))
+     (when (< i (alength prim))
        (IndexedSeq. prim i))))
 
 (defn array-seq
@@ -905,7 +905,8 @@ reduces them without incurring seq initialization"
 (defn ^boolean empty?
   "Returns true if coll has no items - same as (not (seq coll)).
   Please use the idiom (seq x) rather than (not (empty? x))"
-  [coll] (not (seq coll)))
+  [coll] (or (nil? coll)
+             (not (seq coll))))
 
 (defn ^boolean coll?
   "Returns true if x satisfies ICollection"
@@ -5467,7 +5468,7 @@ reduces them without incurring seq initialization"
               :else      (if (pos? c)
                            (recur (conj stack t) (.-right t))
                            (recur stack          (.-left t)))))
-          (if (nil? stack)
+          (when-not (nil? stack)
             (PersistentTreeMapSeq. nil stack ascending? -1 nil))))))
 
   (-entry-key [coll entry] (key entry))
@@ -5518,7 +5519,7 @@ reduces them without incurring seq initialization"
   Returns a new sorted map with supplied mappings, using the supplied comparator."
   ([comparator & keyvals]
      (loop [in (seq keyvals)
-            out (cljs.core.PersistentTreeMap. comparator nil 0 nil 0)]
+            out (cljs.core.PersistentTreeMap. (fn->comparator comparator) nil 0 nil 0)]
        (if in
          (recur (nnext in) (assoc out (first in) (second in)))
          out))))
@@ -5745,9 +5746,10 @@ reduces them without incurring seq initialization"
   (-lookup [coll v]
     (-lookup coll v nil))
   (-lookup [coll v not-found]
-    (if (-contains-key? tree-map v)
-      v
-      not-found))
+    (let [n (.entry-at tree-map v)]
+      (if-not (nil? n)
+        (.-key n)
+        not-found)))
 
   ISet
   (-disjoin [coll v]
@@ -6232,7 +6234,7 @@ reduces them without incurring seq initialization"
               ;; handle CLJS ctors
               (and (not (nil? obj))
                    ^boolean (.-cljs$lang$type obj))
-                (.cljs$lang$ctorPrWriter obj writer opts)
+                (.cljs$lang$ctorPrWriter obj obj writer opts)
 
               ; Use the new, more efficient, IPrintWithWriter interface when possible.
               (satisfies? IPrintWithWriter obj) (-pr-writer obj writer opts)
