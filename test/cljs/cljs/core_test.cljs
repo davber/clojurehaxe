@@ -246,6 +246,8 @@
 
   (assert (= "" (pr-str)))
   (assert (= "\n" (prn-str)))
+  (assert  (= "12" (with-out-str (print 1) (print 2))))
+  (assert  (= "12" (with-out-str (*print-fn* 1) (*print-fn* 2))))
 
   ;;this fails in v8 - why?
   ;(assert (= "symbol\"'string" (pr-str (str 'symbol \" \' "string"))))
@@ -1650,6 +1652,7 @@
   (assert (= (pr-str true) "true"))
   (assert (= (pr-str false) "false"))
   (assert (= (pr-str "string") "\"string\""))
+  (assert (= (pr-str ["üñîçó∂£" :ทดสอบ/你好 'こんにちは]) "[\"üñîçó∂£\" :ทดสอบ/你好 こんにちは]"))
   (assert (= (pr-str "escape chars \t \r \n \\ \" \b \f") "\"escape chars \\t \\r \\n \\\\ \\\" \\b \\f\""))
 
   ;;; pr-str records
@@ -1683,6 +1686,18 @@
   (let [uuid-str "550e8400-e29b-41d4-a716-446655440000"
         uuid (UUID. uuid-str)]
     (assert (= (pr-str uuid) (str "#uuid \"" uuid-str "\""))))
+
+  ;; CLJS-405
+
+  (defprotocol IBar (-bar [this x]))
+
+  (defn baz [f]
+    (reify
+      IBar
+      (-bar [_ x]
+        (f x))))
+
+  (assert (= 2 (-bar (baz inc) 1)))
 
   :ok
   )

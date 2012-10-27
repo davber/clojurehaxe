@@ -322,7 +322,7 @@
     (with-out-str
       (binding [ana/*cljs-ns* 'cljs.user]
         (doseq [form forms]
-          (comp/emit (ana/analyze (ana/empty-env) form)))))))
+          (comp/emit-top-level (ana/analyze (ana/empty-env) form)))))))
 
 (defn output-directory [opts]
   (or (:output-dir opts) "out"))
@@ -896,7 +896,9 @@
       (let [compiled (-compile source all-opts)
             js-sources (concat
                          (apply add-dependencies all-opts
-                            (if (coll? compiled) compiled [compiled]))
+                            (concat (if (coll? compiled) compiled [compiled])
+                                    (when (= :nodejs (:target all-opts))
+                                      [(-compile (io/resource "cljs/nodejs.cljs") all-opts)])))
                          (when (= :nodejs (:target all-opts))
                            [(-compile (io/resource "cljs/nodejscli.cljs") all-opts)]))
             optim (:optimizations all-opts)]

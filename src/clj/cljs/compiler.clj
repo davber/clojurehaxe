@@ -49,12 +49,10 @@
                       shadow (recur (inc d) shadow)
                       (@ns-first-segments (str name)) (inc d)
                       :else d))
-            name (if field
-                   (str "self__." name)
-                   name)]
-        (if (zero? depth)
-          (munge name reserved)
-          (symbol (str (munge name reserved) "__$" depth))))
+            munged-name (munge (if field (str "self__." name) name) reserved)]
+        (if (or field (zero? depth))
+          munged-name
+          (symbol (str munged-name "__$" depth))))
       ; String munging
       (let [ss (string/replace (str s) #"\/(.)" ".$1") ; Division is special
             ss (apply str (map #(if (reserved %) (str % "$") %)
@@ -109,9 +107,6 @@
                 (print s)))))
   nil)
 
-(defn ^String emit-str [expr]
-  (with-out-str (emit expr)))
-
 (defn emitln [& xs]
   (apply emits xs)
   ;; Prints column-aligned line number comments; good test of *position*.
@@ -123,6 +118,22 @@
     (swap! *position* (fn [[line column]]
                         [(inc line) 0])))
   nil)
+
+(defn emit-top-level [{:keys [op] :as ast}]
+  (if (= op :ns)
+    (emit ast)
+    (do
+      (emitln "(function(){")
+      (emit ast)
+      (emitln "})();"))))
+
+(defn ^String emit-str [expr]
+  (with-out-str (emit-top-level expr)))
+
+(defn emit-provide [sym]
+  (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* sym))
+    (swap! *emitted-provides* conj sym)
+    (emitln "goog.provide('" (munge sym) "');")))
 
 (defmulti emit-constant class)
 ;; For some reason, we can get classes outside of these covered,
@@ -218,7 +229,8 @@
         n (if (= (namespace n) "js")
             (name n)
             info)]
-    (emit-wrap env (emits (munge n)))))
+    (when-not (= :statement (:context env))
+      (emit-wrap env (emits (munge n))))))
 
 (defmethod emit :meta
   [{:keys [expr meta env]}]
@@ -682,10 +694,7 @@
 (defmethod emit :deftype*
   [{:keys [t fields pmasks]}]
   (let [fields (map munge fields)]
-    (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* t))
-      (swap! *emitted-provides* conj t)
-      (emitln "")
-      (emitln "goog.provide('" (munge t) "');"))
+    (emit-provide t)
     (emitln "")
     (emitln "/**")
     (emitln "* @constructor")
@@ -700,10 +709,7 @@
 (defmethod emit :defrecord*
   [{:keys [t fields pmasks]}]
   (let [fields (concat (map munge fields) '[__meta __extmap])]
-    (when-not (or (nil? *emitted-provides*) (contains? @*emitted-provides* t))
-      (swap! *emitted-provides* conj t)
-      (emitln "")
-      (emitln "goog.provide('" (munge t) "');"))
+    (emit-provide t)
     (emitln "")
     (emitln "/**")
     (emitln "* @constructor")
@@ -791,7 +797,7 @@
                   form (first forms)
                   ast (ana/analyze env form)]
               (ana/check-compiler-directive form)
-              (do (emit ast)
+              (do (emit-top-level ast)
                   (if (= (:op ast) :ns)
                     (recur (rest forms) (:name ast) (merge (:uses ast) (:requires ast)))
                     (recur (rest forms) ns-name deps))))

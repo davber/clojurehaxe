@@ -18,7 +18,7 @@
 (def
   ^{:doc "Each runtime environment provides a diffenent way to print output.
   Whatever function *print-fn* is bound to will be passed any
-  Strings which should be printed."}
+  Strings which should be printed." :dynamic true}
   *print-fn*
   (fn [_]
     (throw (js/Error. "No *print-fn* fn set for evaluation environment"))))
@@ -6352,6 +6352,21 @@ reduces them without incurring seq initialization"
   [fmt & args]
   (print (apply format fmt args)))
 
+(def ^:private char-escapes {"\"" "\\\""
+                             "\\" "\\\\"
+                             "\b" "\\b"
+                             "\f" "\\f"
+                             "\n" "\\n"
+                             "\r" "\\r"
+                             "\t" "\\t"})
+
+(defn ^:private quote-string
+  [s]
+  (str \"
+       (.replace s (js/RegExp "[\\\\\"\b\f\n\r\t]" "g")
+         (fn [match] (get char-escapes match)))
+       \"))
+
 (extend-protocol ^:deprecation-nowarn IPrintable
   boolean
   (-pr-seq [bool opts] (list (str bool)))
@@ -6376,7 +6391,7 @@ reduces them without incurring seq initialization"
                   (str nspc "/"))
                 (name obj)))
      :else (list (if (:readably opts)
-                   (goog.string.quote obj)
+                   (quote-string obj)
                    obj))))
 
   function
@@ -6512,7 +6527,7 @@ reduces them without incurring seq initialization"
            (write-all writer (str nspc) "/"))
          (-write writer (name obj)))
      :else (if (:readably opts)
-             (-write writer (goog.string.quote obj))
+             (-write writer (quote-string obj))
              (-write writer obj))))
 
   function
