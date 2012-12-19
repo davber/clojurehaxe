@@ -112,7 +112,14 @@
   ;; TODO: we assume mzero is a false value, not good.
   `(or (domonad ~m1 ~@rest) (domonad ~m2 ~@rest)))
 
-
+(defmacro no-warn [& body]
+  `(binding [*cljs-warn-on-undeclared* false
+             *cljs-warn-on-redef* false
+             *cljs-warn-on-dynamic* false
+             *cljs-warn-on-fn-var* false
+             *cljs-warn-fn-arity* false
+             *cljs-warn-fn-deprecated* false]
+     ~@body))
 
 (defn load-core []
   (when (not @-cljs-macros-loaded)
@@ -530,7 +537,7 @@
         methods (if name
                   ;; a second pass with knowledge of our function-ness/arity
                   ;; lets us optimize self calls
-                  (map #(analyze-fn-method menv locals % type) meths)
+                  (no-warn (doall (map #(analyze-fn-method menv locals % type) meths)))
                   methods)]
     ;;todo - validate unique arities, at most one variadic, variadic takes max required args
     {:env env :op :fn :form form :name name :methods methods :variadic variadic
@@ -585,7 +592,8 @@
            (if-let [[name init] (first bindings)]
              (do
                (assert (not (or (namespace name) (.contains (str name) "."))) (str "Invalid local name: " name))
-               (let [init-expr (analyze env init)
+               (let [init-expr (binding [*loop-lets* (cons {:params bes} (or *loop-lets* ()))]
+                                 (analyze env init))
                      be {:name name
                          :init init-expr
                          :tag (or (-> name meta :tag)
