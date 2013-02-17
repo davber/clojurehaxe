@@ -161,12 +161,14 @@
                   (name x)
                   \"))
 
+;; TODO: we could optimize, call type constructor & inline all the properties of x - David
+
 (defmethod emit-constant clojure.lang.Symbol [x]
-           (emits \" "\\uFDD1" \'
-                  (if (namespace x)
-                    (str (namespace x) "/") "")
-                  (name x)
-                  \"))
+  (emits "cljs.core.symbol(")
+  (emit-constant (namespace x))
+  (emits ",")
+  (emit-constant (name x))
+  (emits ")"))
 
 (defn- emit-meta-constant [x & body]
   (if (meta x)
@@ -236,34 +238,35 @@
 (def ^:private obj-map-threshold 32)
 
 (defmethod emit :map
-  [{:keys [env simple-keys? keys vals]}]
-  (emit-wrap env
-    (cond
-      (zero? (count keys))
-      (emits "cljs.core.ObjMap.EMPTY")
+  [{:keys [env keys vals]}]
+  (let [simple-keys? (every? #(or (string? %) (keyword? %)) keys)]
+    (emit-wrap env
+      (cond
+        (zero? (count keys))
+        (emits "cljs.core.ObjMap.EMPTY")
 
-      (and simple-keys? (<= (count keys) obj-map-threshold))
-      (emits "cljs.core.ObjMap.fromObject(["
-             (comma-sep keys) ; keys
-             "],{"
-             (comma-sep (map (fn [k v]
-                               (with-out-str (emit k) (print ":") (emit v)))
-                             keys vals)) ; js obj
-             "})")
+        (and simple-keys? (<= (count keys) obj-map-threshold))
+        (emits "cljs.core.ObjMap.fromObject(["
+               (comma-sep keys)          ; keys
+               "],{"
+               (comma-sep (map (fn [k v]
+                                 (with-out-str (emit k) (print ":") (emit v)))
+                               keys vals)) ; js obj
+               "})")
 
-      (<= (count keys) array-map-threshold)
-      (emits "cljs.core.PersistentArrayMap.fromArrays(["
-             (comma-sep keys)
-             "],["
-             (comma-sep vals)
-             "])")
+        (<= (count keys) array-map-threshold)
+        (emits "cljs.core.PersistentArrayMap.fromArrays(["
+               (comma-sep keys)
+               "],["
+               (comma-sep vals)
+               "])")
 
-      :else
-      (emits "cljs.core.PersistentHashMap.fromArrays(["
-             (comma-sep keys)
-             "],["
-             (comma-sep vals)
-             "])"))))
+        :else
+        (emits "cljs.core.PersistentHashMap.fromArrays(["
+               (comma-sep keys)
+               "],["
+               (comma-sep vals)
+               "])")))))
 
 (defmethod emit :vector
   [{:keys [items env]}]
