@@ -75,10 +75,20 @@
   argv as arguments"}
   *main-cli-fn* nil)
 
+(declare pr-str)
+
+(defn type [x]
+  (when-not (nil? x)
+    (.-constructor x)))
+
 (defn missing-protocol [proto obj]
-  (js/Error
-   (.join (array "No protocol method " proto
-                 " defined for type " (goog/typeOf obj) ": " obj) "")))
+  (let [ty (type obj)
+        ty (if (and ty (.-cljs$lang$type ty))
+             (pr-str ty)
+             (goog/typeOf obj))]
+   (js/Error.
+     (.join (array "No protocol method " proto
+                   " defined for type " ty ": " obj) ""))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; arrays ;;;;;;;;;;;;;;;;
 
@@ -317,7 +327,7 @@
 
 (declare list instance? symbol? hash-combine hash)
 
-(deftype Symbol [ns name str _hash _meta]
+(deftype Symbol [ns name str ^:mutable _hash _meta]
   Object
   (toString [_] str)
   IEquiv
@@ -335,7 +345,12 @@
   IWithMeta
   (-with-meta [_ new-meta] (Symbol. ns name str _hash new-meta))
   IHash
-  (-hash [_] _hash)
+  (-hash [_]
+    (if (== _hash -1)
+      (do
+        (set! _hash (hash-combine (hash ns) (hash name)))
+        _hash)
+      _hash))
   INamed
   (-name [_] name)
   (-namespace [_] ns)
@@ -348,10 +363,10 @@
        name
        (symbol nil name)))
   ([ns name]
-     (let [sym-str (if ns
+     (let [sym-str (if-not (nil? ns)
                      (str ns "/" name)
                      name)]
-       (Symbol. ns name sym-str (hash-combine (hash ns) (hash name)) nil))))
+       (Symbol. ns name sym-str -1 nil))))
 
 ;;;;;;;;;;;;;;;;;;; fundamentals ;;;;;;;;;;;;;;;
 
@@ -411,10 +426,6 @@
          (recur y (first more) (next more))
          (= y (first more)))
        false)))
-
-(defn type [x]
-  (when-not (nil? x)
-    (.-constructor x)))
 
 (defn ^boolean instance? [t o]
   (js* "(~{o} instanceof ~{t})"))
@@ -621,7 +632,7 @@ reduces them without incurring seq initialization"
   "Returns true if coll implements nth in constant time"
   [x] (satisfies? IIndexed x))
 
-(deftype IndexedSeq [a i]
+(deftype IndexedSeq [arr i]
   Object
   (toString [this]
     (pr-str this))
@@ -631,28 +642,28 @@ reduces them without incurring seq initialization"
 
   ASeq
   ISeq
-  (-first [_] (aget a i))
-  (-rest [_] (if (< (inc i) (alength a))
-               (IndexedSeq. a (inc i))
+  (-first [_] (aget arr i))
+  (-rest [_] (if (< (inc i) (alength arr))
+               (IndexedSeq. arr (inc i))
                (list)))
 
   INext
-  (-next [_] (if (< (inc i) (alength a))
-               (IndexedSeq. a (inc i))
+  (-next [_] (if (< (inc i) (alength arr))
+               (IndexedSeq. arr (inc i))
                nil))
 
   ICounted
-  (-count [_] (- (alength a) i))
+  (-count [_] (- (alength arr) i))
 
   IIndexed
   (-nth [coll n]
     (let [i (+ n i)]
-      (when (< i (alength a))
-        (aget a i))))
+      (when (< i (alength arr))
+        (aget arr i))))
   (-nth [coll n not-found]
     (let [i (+ n i)]
-      (if (< i (alength a))
-        (aget a i)
+      (if (< i (alength arr))
+        (aget arr i)
         not-found)))
 
   ISequential
@@ -667,12 +678,12 @@ reduces them without incurring seq initialization"
 
   IReduce
   (-reduce [coll f]
-    (if (counted? a)
-      (ci-reduce a f (aget a i) (inc i))
-      (ci-reduce coll f (aget a i) 0)))
+    (if (counted? arr)
+      (ci-reduce arr f (aget arr i) (inc i))
+      (ci-reduce coll f (aget arr i) 0)))
   (-reduce [coll f start]
-    (if (counted? a)
-      (ci-reduce a f start i)
+    (if (counted? arr)
+      (ci-reduce arr f start i)
       (ci-reduce coll f start 0)))
 
   IHash
@@ -1721,14 +1732,20 @@ reduces them without incurring seq initialization"
     (rseq coll)
     (reduce conj () coll)))
 
-(defn list
-  ([] ())
-  ([x] (conj () x))
-  ([x y] (conj (list y) x))
-  ([x y z] (conj (list y z) x))
-  ([x y z & items]
-     (conj (conj (conj (reduce conj () (reverse items))
-                       z) y) x)))
+(defn list [& xs]
+  (let [arr (if (instance? IndexedSeq xs)
+              (.-arr xs)
+              (let [arr (array)]
+                (loop [^not-native xs xs]
+                  (if-not (nil? xs)
+                    (do
+                      (.push arr (-first xs))
+                      (recur (-next xs)))
+                    arr))))]
+    (loop [i (alength arr) ^not-native r ()]
+      (if (> i 0)
+        (recur (dec i) (-conj r (aget arr (dec i))))
+        r))))
 
 (deftype Cons [meta first rest ^:mutable __hash]
   IList
@@ -1930,9 +1947,9 @@ reduces them without incurring seq initialization"
 
 (defn array-chunk
   ([arr]
-     (array-chunk arr 0 (alength arr)))
+     (ArrayChunk. arr 0 (alength arr)))
   ([arr off]
-     (array-chunk arr off (alength arr)))
+     (ArrayChunk. arr off (alength arr)))
   ([arr off end]
      (ArrayChunk. arr off end)))
 
@@ -2792,11 +2809,26 @@ reduces them without incurring seq initialization"
   and any supplied args and return the new value, and returns a new
   nested structure.  If any levels do not exist, hash-maps will be
   created."
-  ([m [k & ks] f & args]
+  ([m [k & ks] f]
    (if ks
-     (assoc m k (apply update-in (get m k) ks f args))
-     (assoc m k (apply f (get m k) args)))))
-
+     (assoc m k (update-in (get m k) ks f))
+     (assoc m k (f (get m k)))))
+  ([m [k & ks] f a]
+   (if ks
+     (assoc m k (update-in (get m k) ks f a))
+     (assoc m k (f (get m k) a))))
+  ([m [k & ks] f a b]
+   (if ks
+     (assoc m k (update-in (get m k) ks f a b))
+     (assoc m k (f (get m k) a b))))
+  ([m [k & ks] f a b c]
+   (if ks
+     (assoc m k (update-in (get m k) ks f a b c))
+     (assoc m k (f (get m k) a b c))))
+  ([m [k & ks] f a b c & args]
+   (if ks
+     (assoc m k (apply update-in (get m k) ks f a b c args))
+     (assoc m k (apply f (get m k) a b c args)))))
 
 ;;; Vector
 ;;; DEPRECATED
@@ -3036,9 +3068,10 @@ reduces them without incurring seq initialization"
 
   ISeqable
   (-seq [coll]
-    (if (zero? cnt)
-      nil
-      (chunked-seq coll 0 0)))
+    (cond
+      (zero? cnt) nil
+      (< cnt 32) (array-seq tail)
+      :else (chunked-seq coll 0 0)))
 
   ICounted
   (-count [coll] cnt)
@@ -3207,8 +3240,8 @@ reduces them without incurring seq initialization"
   (-hash [coll] (caching-hash coll hash-coll __hash)))
 
 (defn chunked-seq
-  ([vec i off] (chunked-seq vec (array-for vec i) i off nil))
-  ([vec node i off] (chunked-seq vec node i off nil))
+  ([vec i off] (ChunkedSeq. vec (array-for vec i) i off nil nil))
+  ([vec node i off] (ChunkedSeq. vec node i off nil nil))
   ([vec node i off meta]
      (ChunkedSeq. vec node i off meta nil)))
 
@@ -3753,7 +3786,7 @@ reduces them without incurring seq initialization"
 
 (set! cljs.core.ObjMap/EMPTY (ObjMap. nil (array) (js-obj) 0 0))
 
-(set! cljs.core.ObjMap/HASHMAP_THRESHOLD 32)
+(set! cljs.core.ObjMap/HASHMAP_THRESHOLD 8)
 
 (set! cljs.core.ObjMap/fromObject (fn [ks obj] (ObjMap. nil ks obj 0 nil)))
 
@@ -3870,14 +3903,37 @@ reduces them without incurring seq initialization"
 
 ;;; PersistentArrayMap
 
+(defn- equiv-nil [k k']
+  (nil? k'))
+
+(defn- equiv-pred [x]
+  (cond
+    ^boolean (goog/isString x) identical?
+    (nil? x) equiv-nil
+    (number? x) identical?
+    :else =))
+
 (defn- array-map-index-of [m k]
-  (let [arr (.-arr m)
-        len (alength arr)]
+  (let [arr  (.-arr m)
+        len  (alength arr)
+        pred (equiv-pred k)]
     (loop [i 0]
       (cond
         (<= len i) -1
-        (= (aget arr i) k) i
+        ^boolean (pred k (aget arr i)) i
         :else (recur (+ i 2))))))
+
+(defn- array-map-extend-kv [m k v]
+  (let [arr (.-arr m)
+        l (alength arr)
+        narr (make-array (+ l 2))]
+    (loop [i 0]
+      (when (< i l)
+        (aset narr i (aget arr i))
+        (recur (inc i))))
+    (aset narr l k)
+    (aset narr (inc l) v)
+    narr))
 
 (declare TransientArrayMap)
 
@@ -3940,12 +3996,10 @@ reduces them without incurring seq initialization"
         (if (< cnt cljs.core.PersistentArrayMap/HASHMAP_THRESHOLD)
           (PersistentArrayMap. meta
                                (inc cnt)
-                               (doto (aclone arr)
-                                 (.push k)
-                                 (.push v))
+                               (array-map-extend-kv coll k v)
                                nil)
-          (with-meta
-            (assoc (into cljs.core.PersistentHashMap/EMPTY coll) k v)
+          (-with-meta
+            (-assoc (into cljs.core.PersistentHashMap/EMPTY coll) k v)
             meta))
 
         (identical? v (aget arr (inc idx)))
@@ -4003,7 +4057,7 @@ reduces them without incurring seq initialization"
 
 (set! cljs.core.PersistentArrayMap/EMPTY (PersistentArrayMap. nil 0 (array) nil))
 
-(set! cljs.core.PersistentArrayMap/HASHMAP_THRESHOLD 16)
+(set! cljs.core.PersistentArrayMap/HASHMAP_THRESHOLD 8)
 
 (set! cljs.core.PersistentArrayMap/fromArrays
       (fn [ks vs]
@@ -7061,9 +7115,15 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   "Creates a hierarchy object for use with derive, isa? etc."
   [] {:parents {} :descendants {} :ancestors {}})
 
-(def
-  ^{:private true}
-  global-hierarchy (atom (make-hierarchy)))
+(def ^:private -global-hierarchy nil)
+
+(defn- get-global-hierarchy []
+  (when (nil? -global-hierarchy)
+    (set! -global-hierarchy (atom (make-hierarchy))))
+  -global-hierarchy)
+
+(defn- swap-global-hierarchy! [f & args]
+  (apply swap! (get-global-hierarchy) f args))
 
 (defn ^boolean isa?
   "Returns true if (= child parent), or child is directly or indirectly derived from
@@ -7071,7 +7131,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   relationship established via derive. h must be a hierarchy obtained
   from make-hierarchy, if not supplied defaults to the global
   hierarchy"
-  ([child parent] (isa? @global-hierarchy child parent))
+  ([child parent] (isa? @(get-global-hierarchy) child parent))
   ([h child parent]
      (or (= child parent)
          ;; (and (class? parent) (class? child)
@@ -7090,7 +7150,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   inheritance relationship or a relationship established via derive. h
   must be a hierarchy obtained from make-hierarchy, if not supplied
   defaults to the global hierarchy"
-  ([tag] (parents @global-hierarchy tag))
+  ([tag] (parents @(get-global-hierarchy) tag))
   ([h tag] (not-empty (get (:parents h) tag))))
 
 (defn ancestors
@@ -7098,7 +7158,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   inheritance relationship or a relationship established via derive. h
   must be a hierarchy obtained from make-hierarchy, if not supplied
   defaults to the global hierarchy"
-  ([tag] (ancestors @global-hierarchy tag))
+  ([tag] (ancestors @(get-global-hierarchy) tag))
   ([h tag] (not-empty (get (:ancestors h) tag))))
 
 (defn descendants
@@ -7107,7 +7167,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   from make-hierarchy, if not supplied defaults to the global
   hierarchy. Note: does not work on JavaScript type inheritance
   relationships."
-  ([tag] (descendants @global-hierarchy tag))
+  ([tag] (descendants @(get-global-hierarchy) tag))
   ([h tag] (not-empty (get (:descendants h) tag))))
 
 (defn derive
@@ -7119,7 +7179,7 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   ([tag parent]
    (assert (namespace parent))
    ;; (assert (or (class? tag) (and (instance? cljs.core.Named tag) (namespace tag))))
-   (swap! global-hierarchy derive tag parent) nil)
+   (swap-global-hierarchy! derive tag parent) nil)
   ([h tag parent]
    (assert (not= tag parent))
    ;; (assert (or (class? tag) (instance? clojure.lang.Named tag)))
@@ -7149,8 +7209,8 @@ Maps become Objects. Arbitrary keys are encoded to by key->js."
   tag. h must be a hierarchy obtained from make-hierarchy, if not
   supplied defaults to, and modifies, the global hierarchy."
   ([tag parent]
-     ;; (alter-var-root #'global-hierarchy underive tag parent)
-     (swap! global-hierarchy underive tag parent) nil)
+    (swap-global-hierarchy! underive tag parent)
+    nil)
   ([h tag parent]
     (let [parentMap (:parents h)
           childsParents (if (parentMap tag)

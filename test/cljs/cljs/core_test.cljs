@@ -883,9 +883,6 @@
   (assert (= {:a 1} (meta (vary-meta [] assoc :a 1))))
   (assert (= {:a 1 :b 2} (meta (vary-meta (with-meta [] {:b 2}) assoc :a 1))))
 
-  ;; multi-methods
-  (swap! global-hierarchy make-hierarchy)
-
   ;; hierarchy tests
   (derive ::rect ::shape)
   (derive ::square ::rect)
@@ -1643,14 +1640,16 @@
 
   ;; Chunked Sequences
 
-  (assert (= (hash (seq [1 2])) (hash (seq [1 2]))))
-  (assert (= 6 (reduce + (array-chunk (array 1 2 3)))))
-  (assert (instance? ChunkedSeq (seq [1 2 3])))
-  (assert (= '(1 2 3) (seq [1 2 3])))
-  (assert (= '(2 3 4) (map inc [1 2 3])))
-  (assert (= '(2) (filter even? [1 2 3])))
-  (assert (= '(1 3) (filter odd? [1 2 3])))
-  (assert (= '(1 2 3) (concat [1] [2] [3])))
+  (let [r (range 64)
+        v (into [] r)]
+    (assert (= (hash (seq v)) (hash (seq v))))
+    (assert (= 6 (reduce + (array-chunk (array 1 2 3)))))
+    (assert (instance? ChunkedSeq (seq v)))
+    (assert (= r (seq v)))
+    (assert (= (map inc r) (map inc v)))
+    (assert (= (filter even? r) (filter even? v)))
+    (assert (= (filter odd? r) (filter odd? v)))
+    (assert (= (concat r r r) (concat v v v))))
 
   ;; INext
 
