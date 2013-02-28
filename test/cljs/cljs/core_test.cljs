@@ -1730,15 +1730,7 @@
   ;;; pr-str records
 
   (defrecord PrintMe [a b])
-  (assert (= (pr-str (PrintMe. 1 2)) "#PrintMe{:a 1, :b 2}"))
-
-  ;;; pr-str backwards compatibility
-
-  (deftype PrintMeBackwardsCompat [a b]
-    IPrintable
-    (-pr-seq [_ _] (list (str "<<<" a " " b ">>>"))))
-
-  (assert (= (pr-str (PrintMeBackwardsCompat. 1 2)) "<<<1 2>>>"))
+  (assert (= (pr-str (PrintMe. 1 2)) "#cljs.core-test.PrintMe{:a 1, :b 2}"))
 
   ;;; pr-str inst
 
@@ -1835,6 +1827,11 @@
 
   (assert (= (reduce-kv + 0 (apply hash-map (range 1000)))
              (reduce + (range 1000))))
+
+  ;; CLJS-477
+
+  (assert (= [js/undefined 1 2] ((fn [& more] more) js/undefined 1 2)))
+  (assert (= [js/undefined 4 5] ((fn [a b & more] more) 1 2 js/undefined 4 5)))
 
   :ok
   )
