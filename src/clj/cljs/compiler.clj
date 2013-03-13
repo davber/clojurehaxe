@@ -594,7 +594,7 @@
         protocol (:protocol info)
         tag      (infer-tag (first (:args expr)))
         proto? (and protocol tag
-                 (or (and ana/*cljs-static-fns* protocol (= tag 'not-native)) 
+                 (or (and ana/*cljs-static-fns* protocol (= tag 'not-native))
                      (and
                        (or ana/*cljs-static-fns*
                            (:protocol-inline env))
@@ -858,31 +858,34 @@
    is recommended."
 
   [src & [dest]]
-     (let [src-file (io/file src)
-           dest-file (io/file (or dest (rename-to-js src)))]
-       (if (.exists src-file)
-         (if (requires-compilation? src-file dest-file)
-           (ana/with-compiler-features {}
-              (let [is-cljs (.endsWith (str src) ".cljs")]
-                 (ana/set-compiler-feature
-                  :target (if is-cljs :js :jvm)
-                  :language (if is-cljs 'clojurescript 'clojure)))
-              (ana/warning {} (str "\nDEBUG: starting compilation of " src " with compiler features " (ana/get-compiler-features)))
-              (mkdirs dest-file)
-              (let [ret (compile-file* src-file dest-file)]
-                  (println "\nDEBUG: ended compilation of" src "with compiler features" (ana/get-compiler-features))
-                  ;; Ok, now when it is done, check the compiler
-                  ;; features :target and :stub
-                  (if (or (ana/get-compiler-feature :stub)
-                          (= (ana/get-compiler-feature :target) :js))
-                    ret
-                    (do (io/delete-file dest-file true)
-                      (println "\nWARN: removed compiled target" dest-file
-                        "for source" src
-                        "since it could not be determined to target ClojureScript")
+  (let [src-file (io/file src)
+        dest-file (io/file (or dest (rename-to-js src)))]
+    (if (.exists src-file)
+      (try
+        (if (requires-compilation? src-file dest-file)
+          (ana/with-compiler-features {}
+            (let [is-cljs (.endsWith (str src) ".cljs")]
+              (ana/set-compiler-feature
+               :target (if is-cljs :js :jvm)
+               :language (if is-cljs 'clojurescript 'clojure)))
+            (ana/warning {} (str "\nDEBUG: starting compilation of " src " with compiler features " (ana/get-compiler-features)))
+            (mkdirs dest-file)
+            (let [ret (compile-file* src-file dest-file)]
+              (println "\nDEBUG: ended compilation of" src "with compiler features" (ana/get-compiler-features))
+              ;; Ok, now when it is done, check the compiler
+              ;; features :target and :stub
+              (if (or (ana/get-compiler-feature :stub)
+                      (= (ana/get-compiler-feature :target) :js))
+                ret
+                (do (io/delete-file dest-file true)
+                    (println "\nWARN: removed compiled target" dest-file
+                             "for source" src
+                             "since it could not be determined to target ClojureScript")
                     {:file dest-file :invalid-target true}))))
-           (parse-ns src-file dest-file))
-         (throw (java.io.FileNotFoundException. (str "The file " src " does not exist."))))))
+          (parse-ns src-file dest-file))
+        (catch Exception e
+          (throw (ex-info (str "failed compiling file:" src) {:file src} e))))
+      (throw (java.io.FileNotFoundException. (str "The file " src " does not exist."))))))
 
 (comment
   ;; flex compile-file
